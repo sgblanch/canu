@@ -248,20 +248,25 @@ sub buildCorrectionLayouts_direct ($$) {
     #  UTGCNS for correction is writing FASTQ, but needs to write FASTA.  The names below were changed to fasta preemptively.
 
     if (getGlobal("corConsensus") eq "utgcns") {
-        caExit("UTGCNS for correction is writing FASTQ, but needs to write FASTA", undef);
         print F "\n";
         print F "\$bin/utgcns \\\n";
         print F "  -u \$bgn-\$end \\\n";
         print F "  -e $erate \\\n";
+        print F "  -mincoverage " . getGlobal("corMinCoverage") . "\\\n";
+        print F "  -maxcoverage $maxCov \\\n" if (defined($maxCov));
         print F "  -G $wrk/$asm.gkpStore \\\n";
         print F "  -T $wrk/$asm.corStore 1 . \\\n";
         print F "  -O $path/correction_outputs/\$jobid.cns.WORKING \\\n";
         print F "  -L $path/correction_outputs/\$jobid.layout.WORKING \\\n";
-        print F "  -F $path/correction_outputs/\$jobid.fasta.WORKING \\\n";
+        print F "  -F $path/correction_outputs/\$jobid.fastq.WORKING \\\n";
+        print F "  -threads " . getGlobal("corThreads") . " \\\n";
+        print F " > $path/correction_outputs/\$jobid.fasta.WORKING \\\n";
         print F "&& \\\n";
         print F "mv $path/correction_outputs/\$jobid.cns.WORKING $path/correction_outputs/\$jobid.cns \\\n";
         print F "&& \\\n";
         print F "mv $path/correction_outputs/\$jobid.layout.WORKING $path/correction_outputs/\$jobid.layout \\\n";
+        print F "&& \\\n";
+        print F "mv $path/correction_outputs/\$jobid.fastq.WORKING $path/correction_outputs/\$jobid.fastq \\\n";
         print F "&& \\\n";
         print F "mv $path/correction_outputs/\$jobid.fasta.WORKING $path/correction_outputs/\$jobid.fasta \\\n";
         print F "\n";

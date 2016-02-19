@@ -88,6 +88,8 @@ main (int argc, char **argv) {
   bool      showResult     = false;
 
   double    maxCov         = 0.0;
+  double    minCov        = 0.0;
+
   uint32    maxLen         = UINT32_MAX;
 
   uint32    verbosity      = 0;
@@ -165,6 +167,9 @@ main (int argc, char **argv) {
     } else if (strcmp(argv[arg], "-maxcoverage") == 0) {
       maxCov   = atof(argv[++arg]);
 
+    } else if (strcmp(argv[arg], "-mincoverage") == 0) {
+      minCov   = atof(argv[++arg]);
+
     } else if (strcmp(argv[arg], "-maxlength") == 0) {
       maxLen   = atof(argv[++arg]);
 
@@ -238,6 +243,9 @@ main (int argc, char **argv) {
     fprintf(stderr, "    -maxcoverage c  Use non-contained reads and the longest contained reads, up to\n");
     fprintf(stderr, "                    C coverage, for consensus generation.  The default is 0, and will\n");
     fprintf(stderr, "                    use all reads.\n");
+    fprintf(stderr, "    -mincoverage c  Only output bases with at least c reads supporting them.\n");
+    fprintf(stderr, "                    Default is 0 and will output all bases.\n");
+    fprintf(stderr, "                    If set to >1 sequence will be split if needed and output as fasta with only the longest sequence output as fastq.\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  LOGGING\n");
     fprintf(stderr, "    -v              Show multialigns.\n");
@@ -480,7 +488,7 @@ main (int argc, char **argv) {
           break;
         case 'P':
         default:
-          success = utgcns->generatePBDAG(tig, inPackageRead, inPackageReadData);
+          success = utgcns->generatePBDAG(tig, minCov, inPackageRead, inPackageReadData);
           break;
         case 'U':
           success = utgcns->generate(tig, inPackageRead, inPackageReadData);

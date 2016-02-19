@@ -81,6 +81,7 @@ public:
                   map<uint32, gkReadData *> *inPackageReadData = NULL);
 
   bool   generatePBDAG(tgTig                     *tig,
+                       double			  minCov	    = 1.0,
                        map<uint32, gkRead *>     *inPackageRead     = NULL,
                        map<uint32, gkReadData *> *inPackageReadData = NULL);
 

@@ -80,9 +80,11 @@ SOURCES      := AS_global.C \
                 utgcns/libcns/abMultiAlign.C \
                 utgcns/libcns/unitigConsensus.C \
                 utgcns/libpbutgcns/Alignment.C	\
-                utgcns/libpbutgcns/AlnGraphBoost.C  \
-                utgcns/libpbutgcns/SimpleAligner.C \
-                utgcns/libNDFalcon/dw.C
+		utgcns/libpbutgcns/AlnGraphBoost.C  \
+		utgcns/libpbutgcns/SimpleAligner.C \
+                utgcns/libNDFalcon/dw.C \
+		utgcns/libSW/ssw_cpp.C \
+		utgcns/libSW/ssw.C
 
 SRC_INCDIRS  := . \
                 AS_UTL \
@@ -91,7 +93,8 @@ SRC_INCDIRS  := . \
                 utgcns/libNDalign \
                 utgcns/libcns \
                 utgcns/libpbutgcns \
-                utgcns/libNDFalcon \
+		utgcns/libNDFalcon \
+		utgcns/libSW \
                 utgcns/libboost \
                 meryl/libleaff \
                 overlapInCore \

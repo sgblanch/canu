@@ -10,9 +10,9 @@ endif
 TARGET   := utgcns
 SOURCES  := utgcns.C stashContains.C
 
-SRC_INCDIRS  := .. ../AS_UTL ../stores libcns libpbutgcns libNDFalcon libboost
+SRC_INCDIRS  := .. ../AS_UTL ../stores libcns libpbutgcns libNDFalcon libboost libSW
 
-TGT_LDFLAGS := -L${TARGET_DIR}
+TGT_LDFLAGS := -L${TARGET_DIR} 
 TGT_LDLIBS  := -lcanu
 TGT_PREREQS := libcanu.a
 

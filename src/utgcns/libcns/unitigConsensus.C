@@ -253,10 +253,10 @@ unitigConsensus::generate(tgTig                     *tig_,
 }
 
 
-bool
-unitigConsensus::generatePBDAG(tgTig                     *tig_,
-                               map<uint32, gkRead *>     *inPackageRead_,
-                               map<uint32, gkReadData *> *inPackageReadData_) {
+bool unitigConsensus::generatePBDAG(tgTig                     *tig_,
+				    double		       minCov,			       
+                                    map<uint32, gkRead *>     *inPackageRead_,
+                                    map<uint32, gkReadData *> *inPackageReadData_) {
     tig      = tig_;
     numfrags = tig->numberOfChildren();
 
@@ -272,36 +272,45 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
     utg.seq = string(tig->_layoutLen, 'N');
 
     // build a quick consensus to align to, just smash together sequences.
-    for (int i = 0; i < numfrags; i++) {
-        gkRead  *read    = gkpStore->gkStore_getRead(utgpos[i].ident());
-        uint32   readLen = read->gkRead_sequenceLength();
+    // for reads we don't want to do this
+    if (minCov <= 1) {
+       for (int i = 0; i < numfrags; i++) {
+          gkRead  *read    = gkpStore->gkStore_getRead(utgpos[i].ident());
+          uint32   readLen = read->gkRead_sequenceLength();
 
-        uint32 start = utgpos[i].min();
-        uint32 end = utgpos[i].max();
+          uint32 start = utgpos[i].min();
+          uint32 end = utgpos[i].max();
 
-        if (start > utg.seq.length()) {
-          start = utg.seq.length() - 1;
-        }
-        if (end - start > readLen) {
-           end = start + readLen;
-        }
-        if (end > utg.seq.length()) {
-           end = utg.seq.length() - 1;
-        }
+          if (start > utg.seq.length()) {
+            start = utg.seq.length() - 1;
+          }
+          if (end - start > readLen) {
+            end = start + readLen;
+          }
+          if (end > utg.seq.length()) {
+            end = utg.seq.length() - 1;
+          }
 
-        abSequence  *seq      = abacus->getSequence(i);
-        char        *fragment = seq->getBases();
+          abSequence  *seq = abacus->getSequence(i);
+          char        *fragment    = seq->getBases();
+//fprintf(stderr, "For this sequence it goes to positions %d %d and the string length is %d\n", utgpos[i].min(), utgpos[i].max(), strlen(fragment));
 
-        for (int j = start; j < end; j++) {
-           if (utg.seq[j] == 'N') {
-              utg.seq[j] = fragment[j - start];
-           }
-        }
+          for (int j = start; j < end; j++) {
+             if (utg.seq[j] == 'N') {
+                utg.seq[j] = fragment[j - start];
+             }
+          }
+       }
+    } else {
+       gkReadData   *readData = new gkReadData;
+       gkpStore->gkStore_loadReadData(tig->tigID(), readData);
+       utg.seq = string(readData->gkReadData_getSequence());
     }
     AlnGraphBoost ag(utg.seq);
+    int32_t slop = (minCov <= 1 ? 0 : 500);
 
     // compute alignments of each sequence in parallel
-#pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < numfrags; i++) {
         bool placed = computePositionFromLayout();
         dagcon::Alignment aln;
@@ -311,13 +320,14 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
         abSequence  *seq      = abacus->getSequence(i);
         char        *fragment = seq->getBases();
 
-        aln.start = utgpos[i].min();
-        aln.end = utgpos[i].max();
+        aln.start = std::max((int32_t)0, utgpos[i].min()-slop);
+        aln.end = std::min((int32_t)utg.seq.length()-1, utgpos[i].max()+slop);
         aln.frgid = utgpos[i].ident();
         aln.qstr = string(fragment);
         aln.tstr = utg.seq.substr(aln.start, aln.end-aln.start);
+fprintf(stderr, "Aligning read %d to positions %d-%d\n", utgpos[i].ident(), aln.start, aln.end);
 
-        align.align(aln, errorRate);
+        align.align(aln, errorRate, minCov <= 1);
         if (aln.qstr.size() == 0) {
             cnspos[i].setMinMax(0, 0);
             continue;
@@ -332,7 +342,26 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
 
     // merge the nodes and call consensus
     ag.mergeNodes();
-    std::string cns = ag.consensus(1);
+    std::string cns;
+
+    // ugly, ugly, we're completely bypassing datastores and writing to stdout which is very bad
+    // 
+    if (minCov <= 1) {
+       cns = ag.consensus(1);
+    } else {
+       std::vector<CnsResult> seqs;
+       int maxLen = 0;
+       ag.consensus(seqs, (int)(round(minCov)), 500);
+fprintf(stderr, "Got a total of %d sequences for original %d\n", seqs.size(), utg.seq.length());
+       
+       for (std::vector<CnsResult>::iterator it = seqs.begin(); it != seqs.end(); ++it) {
+           fprintf(stdout, ">read%d_%d-%d\n%s\n", tig->tigID(), it->range[0], it->range[1], it->seq.c_str());
+           if (maxLen < it->seq.length()) {
+              maxLen = it->seq.length();
+              cns = it->seq;
+           }
+       }
+    }
     
     // save consensus
     resizeArrayPair(tig->_gappedBases, tig->_gappedQuals, 0, tig->_gappedMax, (uint32) cns.length() + 1, resizeArray_doNothing);
@@ -460,6 +489,7 @@ unitigConsensus::initialize(map<uint32, gkRead *>     *inPackageRead,
 
     num_columns  = (utgpos[i].min() > num_columns) ? utgpos[i].min() : num_columns;
     num_columns  = (utgpos[i].max() > num_columns) ? utgpos[i].max() : num_columns;
+fprintf(stderr, "Adding read %d at positions %d to %d and it is reversed %d\n", utgpos[i].ident(), utgpos[i].min(), utgpos[i].max(), utgpos[i].isReverse());
 
     abacus->addRead(gkpStore,
                     utgpos[i].ident(),
