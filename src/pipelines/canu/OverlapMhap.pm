@@ -310,7 +310,7 @@ sub mhapConfigure ($$$) {
     #OPTIMIZE
 
     my $javaPath   = getGlobal("java");
-    my $javaMemory = int(getGlobal("${tag}mhapMemory") * 1024 + 0.5);
+    my $javaMemory = int(getGlobal("${tag}mhapMemory") - 1);
 
     my $cygA       = ($^O ne "cygwin") ? "" : "\$(cygpath -w ";   #  Some baloney to convert nice POSIX paths into
     my $cygB       = ($^O ne "cygwin") ? "" : ")";                #  whatever abomination Windows expects.
@@ -377,7 +377,7 @@ sub mhapConfigure ($$$) {
     print F "#  So mhap writes its output in the correct spot.\n";
     print F "cd ./blocks\n";
     print F "\n";
-    print F "$javaPath -d64 -server -Xmx", $javaMemory, "m \\\n";
+    print F "$javaPath -d64 -server -Xmx", $javaMemory, "\\\n";
     print F "  -jar $cygA \$bin/mhap-" . getGlobal("${tag}MhapVersion") . ".jar $cygB \\\n";
     print F "  --repeat-weight 0.9 --repeat-idf-scale 10 -k $merSize \\\n";
     print F "  --supress-noise 2 \\\n"  if (defined(getGlobal("${tag}MhapFilterUnique")) && getGlobal("${tag}MhapFilterUnique") == 1);
@@ -477,7 +477,7 @@ sub mhapConfigure ($$$) {
     print F "echo \"\"\n";
     print F "\n";
     print F "if [ ! -e ./results/\$qry.mhap ] ; then\n";
-    print F "  $javaPath -d64 -server -Xmx", $javaMemory, "m \\\n";
+    print F "  $javaPath -d64 -server -Xmx", $javaMemory, "\\\n";
     print F "    -jar $cygA \$bin/mhap-" . getGlobal("${tag}MhapVersion") . ".jar $cygB \\\n";
     print F "    --repeat-weight 0.9 --repeat-idf-scale 10 -k $merSize \\\n";
     print F "    --supress-noise 2 \\\n"  if (defined(getGlobal("${tag}MhapFilterUnique")) && getGlobal("${tag}MhapFilterUnique") == 1);
