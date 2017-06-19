@@ -23,8 +23,8 @@
  *  full conditions and disclaimers for each license.
  */
 
-#ifndef AS_BAT_CREATEUNITIGS_H
-#define AS_BAT_CREATEUNITIGS_H
+#ifndef AS_BAT_DROPDEADENDS_H
+#define AS_BAT_DROPDEADENDS_H
 
 #include "AS_BAT_ReadInfo.H"
 #include "AS_BAT_OverlapCache.H"
@@ -35,26 +35,8 @@
 #include "AS_BAT_TigVector.H"
 
 
-class tigLoc {
-public:
-  tigLoc() {
-    cID  = UINT32_MAX;
-    cBgn = 0;
-    cEnd = 0;
-    uID  = UINT32_MAX;
-  };
-
-  uint32   cID;
-  uint32   cBgn;
-  uint32   cEnd;
-  uint32   uID;    //  Debugging.
-};
-
-
-
 void
-createUnitigs(TigVector        &contigs,
-              TigVector        &unitigs,
-              vector<tigLoc>   &unitigSource);
+dropDeadEnds(AssemblyGraph    *AG,
+             TigVector        &tigs);
 
-#endif  //  AS_BAT_CREATEUNITIGS_H
+#endif  //  AS_BAT_DROPDEADENDS_H

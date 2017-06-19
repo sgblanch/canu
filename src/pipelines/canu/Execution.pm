@@ -168,8 +168,9 @@ sub schedulerRun () {
     }
 }
 
-sub schedulerFinish ($) {
+sub schedulerFinish ($$) {
     my $dir = shift @_;
+    my $nam = shift @_;
     my $child;
     my @newProcesses;
     my $remain;
@@ -180,8 +181,8 @@ sub schedulerFinish ($) {
     my $diskfree  = (defined($dir)) ? (diskSpace($dir)) : (0);
 
     print STDERR "----------------------------------------\n";
-    print STDERR "-- Starting concurrent execution on ", scalar(localtime()), " with $diskfree GB free disk space ($remain processes; $numberOfProcesses concurrently)\n"  if  (defined($dir));
-    print STDERR "-- Starting concurrent execution on ", scalar(localtime()), " ($remain processes; $numberOfProcesses concurrently)\n"                                    if (!defined($dir));
+    print STDERR "-- Starting '$nam' concurrent execution on ", scalar(localtime()), " with $diskfree GB free disk space ($remain processes; $numberOfProcesses concurrently)\n"  if  (defined($dir));
+    print STDERR "-- Starting '$nam' concurrent execution on ", scalar(localtime()), " ($remain processes; $numberOfProcesses concurrently)\n"                                    if (!defined($dir));
     print STDERR "\n";
     print STDERR "    cd $dir\n";
 
@@ -1254,7 +1255,7 @@ sub submitOrRunParallelJob ($$$$@) {
     my $nParallel  = $nCParallel < $nMParallel ? $nCParallel : $nMParallel;
 
     schedulerSetNumberOfProcesses($nParallel);
-    schedulerFinish($path);
+    schedulerFinish($path, $jobType);
 }
 
 
@@ -1437,33 +1438,39 @@ sub findExecutable ($) {
 
 #  Use caExit() for transient errors, like not opening files, processes that die, etc.
 sub caExit ($$) {
-    my  $asm   = getGlobal("onExitNam");
-    my  $msg   = shift @_;
-    my  $log   = shift @_;
+    my  $asm     = getGlobal("onExitNam");
+    my  $msg     = shift @_;
+    my  $log     = shift @_;
+    my  $version = getGlobal("version");
 
-    print STDERR "================================================================================\n";
-    print STDERR "Don't panic, but a mostly harmless error occurred and Canu stopped.\n";
     print STDERR "\n";
+    print STDERR "ABORT:\n";
+    print STDERR "ABORT: $version\n";
+    print STDERR "ABORT: Don't panic, but a mostly harmless error occurred and Canu stopped.\n";
+    print STDERR "ABORT: Try restarting.  If that doesn't work, ask for help.\n";
+    print STDERR "ABORT:\n";
+    print STDERR "ABORT:   $msg.\n";
+    print STDERR "ABORT:\n";
 
     if (defined($log)) {
         my  $df = diskSpace($log);
 
-        print STDERR "Disk space available:  $df GB\n";
-        print STDERR "\n";
+        print STDERR "ABORT: Disk space available:  $df GB\n";
+        print STDERR "ABORT:\n";
     }
 
     if (-e $log) {
-        print STDERR "Last 50 lines of the relevant log file ($log):\n";
-        print STDERR "\n";
-        system("tail -n 50 $log");
-        print STDERR "\n";
+        print STDERR "ABORT: Last 50 lines of the relevant log file ($log):\n";
+        print STDERR "ABORT:\n";
+
+        open(Z, "tail -n 50 $log");
+        while (<Z>) {
+            print STDERR "ABORT: $_";
+        }
+        close(Z);
+
+        print STDERR "ABORT:\n";
     }
-
-    my $version = getGlobal("version");
-
-    print STDERR "$version failed with:\n";
-    print STDERR "  $msg\n";
-    print STDERR "\n";
 
     my $fail = getGlobal('onFailure');
     if (defined($fail)) {
@@ -1480,26 +1487,35 @@ sub caFailure ($$) {
     my  $msg     = shift @_;
     my  $log     = shift @_;
     my  $version = getGlobal("version");
-    my  $trace   = longmess(undef);
+    my  $trace   = longmess("Failed");
 
-    print STDERR "================================================================================\n";
-    print STDERR "Please panic.  Canu failed, and it shouldn't have.\n";
+    $trace =~ s/\n/\nCRASH: /g;
+
     print STDERR "\n";
-    print STDERR "Stack trace:\n";
-    print STDERR "\n";
-    print STDERR "$trace\n";
-    print STDERR "\n";
+    print STDERR "CRASH:\n";
+    print STDERR "CRASH: $version\n";
+    print STDERR "CRASH: Please panic, this is abnormal.\n";
+    print STDERR "ABORT:\n";
+    print STDERR "CRASH:   $msg.\n";
+    print STDERR "CRASH:\n";
+    print STDERR "CRASH: $trace\n";
+    #print STDERR "CRASH:\n";   #  $trace has an extra CRASH: at the end
 
     if (-e $log) {
-        print STDERR "Last few lines of the relevant log file ($log):\n";
-        print STDERR "\n";
-        system("tail -n 50 $log");
-    }
+        print STDERR "CRASH: Last 50 lines of the relevant log file ($log):\n";
+        print STDERR "CRASH:\n";
 
-    print STDERR "\n";
-    print STDERR "$version failed with:\n";
-    print STDERR "  $msg\n";
-    print STDERR "\n";
+        open(Z, "tail -n 50 $log");
+        while (<Z>) {
+            print STDERR "CRASH: $_";
+        }
+        close(Z);
+
+        print STDERR "CRASH:\n";
+    } else {
+        print STDERR "CRASH: No log file supplied.\n";
+        print STDERR "CRASH:\n";
+    }
 
     my $fail = getGlobal('onFailure');
     if (defined($fail)) {

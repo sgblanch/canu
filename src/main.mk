@@ -104,11 +104,10 @@ SOURCES      := AS_global.C \
                 utgcns/libcns/abColumn.C \
                 utgcns/libcns/abMultiAlign.C \
                 utgcns/libcns/unitigConsensus.C \
-                utgcns/libpbutgcns/Alignment.C	\
                 utgcns/libpbutgcns/AlnGraphBoost.C  \
-                utgcns/libNDFalcon/dw.C \
                 \
                 gfa/gfa.C \
+                gfa/bed.C \
                 \
                 meryl/libkmer/existDB-create-from-fasta.C \
                 meryl/libkmer/existDB-create-from-meryl.C \

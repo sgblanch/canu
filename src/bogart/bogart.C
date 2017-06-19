@@ -58,6 +58,8 @@
 
 #include "AS_BAT_SplitDiscontinuous.H"
 
+#include "AS_BAT_DropDeadEnds.H"
+
 #include "AS_BAT_PromoteToSingleton.H"
 
 #include "AS_BAT_CreateUnitigs.H"
@@ -86,6 +88,7 @@ main (int argc, char * argv []) {
   bool      filterHighError          = true;
   bool      filterLopsided           = true;
   bool      filterSpur               = true;
+  bool      filterDeadEnds           = true;
 
   uint64    genomeSize               = 0;
 
@@ -136,11 +139,38 @@ main (int argc, char * argv []) {
       genomeSize = strtoull(argv[++arg], NULL, 10);
 
     } else if (strcmp(argv[arg], "-unassembled") == 0) {
-      fewReadsNumber  = atoi(argv[++arg]);
-      tooShortLength  = atoi(argv[++arg]);
-      spanFraction    = atof(argv[++arg]);
-      lowcovFraction  = atof(argv[++arg]);
-      lowcovDepth     = atoi(argv[++arg]);
+      uint32  invalid = 0;
+
+      if ((arg + 1 < argc) && (argv[arg + 1][0] != '-'))
+        fewReadsNumber  = atoi(argv[++arg]);
+      else
+        invalid++;
+
+      if ((arg + 1 < argc) && (argv[arg + 1][0] != '-'))
+        tooShortLength  = atoi(argv[++arg]);
+      else
+        invalid++;
+
+      if ((arg + 1 < argc) && (argv[arg + 1][0] != '-'))
+        spanFraction    = atof(argv[++arg]);
+      else
+        invalid++;
+
+      if ((arg + 1 < argc) && (argv[arg + 1][0] != '-'))
+        lowcovFraction  = atof(argv[++arg]);
+      else
+        invalid++;
+
+      if ((arg + 1 < argc) && (argv[arg + 1][0] != '-'))
+        lowcovDepth     = atoi(argv[++arg]);
+      else
+        invalid++;
+
+      if (invalid) {
+        char *s = new char [1024];
+        snprintf(s, 1024, "Too few parameters to -unassembled option.\n");
+        err.push_back(s);
+      }
 
     } else if (strcmp(argv[arg], "-RL") == 0) {
       minReadLen = atoi(argv[++arg]);
@@ -174,6 +204,7 @@ main (int argc, char * argv []) {
       filterHighError  = ((arg >= argc) || (strcasestr(argv[arg], "higherror")  == NULL));
       filterLopsided   = ((arg >= argc) || (strcasestr(argv[arg], "lopsided")   == NULL));
       filterSpur       = ((arg >= argc) || (strcasestr(argv[arg], "spur")       == NULL));
+      filterDeadEnds   = ((arg >= argc) || (strcasestr(argv[arg], "deadends")   == NULL));
 
     } else if (strcmp(argv[arg], "-M") == 0) {
       ovlCacheMemory  = (uint64)(atof(argv[++arg]) * 1024 * 1024 * 1024);
@@ -478,6 +509,12 @@ main (int argc, char * argv []) {
   splitDiscontinuous(contigs, minOverlap);
   promoteToSingleton(contigs);
 
+  if (filterDeadEnds) {
+    dropDeadEnds(AG, contigs);
+    splitDiscontinuous(contigs, minOverlap);
+    promoteToSingleton(contigs);
+  }
+
   writeStatus("\n");
   writeStatus("==> CLEANUP GRAPH.\n");
   writeStatus("\n");
@@ -537,12 +574,6 @@ main (int argc, char * argv []) {
   contigs.computeErrorProfiles(prefix, "generateUnitigs");
   contigs.reportErrorProfiles(prefix, "generateUnitigs");
 
-  AssemblyGraph  *EG = new AssemblyGraph(prefix,
-                                         deviationBubble,
-                                         contigs,
-                                         true);
-
-
   //
   //  We want some way of tracking unitigs that came from the same contig.  Ideally,
   //  we'd be able to emit only the edges that would join unitigs into the original
@@ -559,9 +590,7 @@ main (int argc, char * argv []) {
   //  good first attempt.
   //
 
-  createUnitigs(EG, contigs, unitigs, unitigSource);
-
-  delete EG;
+  createUnitigs(contigs, unitigs, unitigSource);
 
   splitDiscontinuous(unitigs, minOverlap, unitigSource);
 

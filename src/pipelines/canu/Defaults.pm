@@ -40,7 +40,7 @@ package canu::Defaults;
 require Exporter;
 
 @ISA    = qw(Exporter);
-@EXPORT = qw(getCommandLineOptions addCommandLineOption addCommandLineError writeLog getNumberOfCPUs getPhysicalMemorySize getAllowedResources diskSpace printOptions printHelp addSequenceFile setParametersFromFile setParametersFromCommandLine checkJava checkGnuplot checkParameters getGlobal setGlobal setGlobalIfUndef setDefaults setVersion);
+@EXPORT = qw(getCommandLineOptions addCommandLineOption addCommandLineError writeLog getNumberOfCPUs getPhysicalMemorySize getAllowedResources diskSpace printOptions printHelp printCitation addSequenceFile setParametersFromFile setParametersFromCommandLine checkJava checkGnuplot checkParameters getGlobal setGlobal setGlobalIfUndef setDefaults setVersion);
 
 use strict;
 use Cwd qw(getcwd abs_path);
@@ -331,7 +331,7 @@ sub printHelp (@) {
     return   if (!defined($force) && !defined($global{"errors"}));
 
     print "\n";
-    print "usage: canu [-version] \\\n";
+    print "usage: canu [-version] [-citation] \\\n";
     print "            [-correct | -trim | -assemble | -trim-assemble] \\\n";
     print "            [-s <assembly-specifications-file>] \\\n";
     print "             -p <assembly-prefix> \\\n";
@@ -375,6 +375,52 @@ sub printHelp (@) {
 
     exit(1);
 }
+
+
+sub printCitation ($) {
+    my $prefix = shift @_;
+
+    print STDERR "${prefix}Koren S, Walenz BP, Berlin K, Miller JR, Phillippy AM.\n";
+    print STDERR "${prefix}Canu: scalable and accurate long-read assembly via adaptive k-mer weighting and repeat separation.\n";
+    print STDERR "${prefix}Genome Res. 2017 May;27(5):722-736.\n";
+    print STDERR "${prefix}http://doi.org/10.1101/gr.215087.116\n";
+    print STDERR "${prefix}\n";
+    print STDERR "${prefix}Read and contig alignments during correction, consensus and GFA building use:\n";
+    print STDERR "${prefix}  Šošic M, Šikic M.\n";
+    print STDERR "${prefix}  Edlib: a C/C ++ library for fast, exact sequence alignment using edit distance.\n";
+    print STDERR "${prefix}  Bioinformatics. 2017 May 1;33(9):1394-1395.\n";
+    print STDERR "${prefix}  http://doi.org/10.1093/bioinformatics/btw753\n";
+    print STDERR "${prefix}\n";
+    print STDERR "${prefix}Overlaps are generated using:\n";
+    print STDERR "${prefix}  Berlin K, et al.\n";
+    print STDERR "${prefix}  Assembling large genomes with single-molecule sequencing and locality-sensitive hashing.\n";
+    print STDERR "${prefix}  Nat Biotechnol. 2015 Jun;33(6):623-30.\n";
+    print STDERR "${prefix}  http://doi.org/10.1038/nbt.3238\n";
+    print STDERR "${prefix}\n";
+    print STDERR "${prefix}  Myers EW, et al.\n";
+    print STDERR "${prefix}  A Whole-Genome Assembly of Drosophila.\n";
+    print STDERR "${prefix}  Science. 2000 Mar 24;287(5461):2196-204.\n";
+    print STDERR "${prefix}  http://doi.org/10.1126/science.287.5461.2196\n";
+    print STDERR "${prefix}\n";
+    print STDERR "${prefix}  Li H.\n";
+    print STDERR "${prefix}  Minimap and miniasm: fast mapping and de novo assembly for noisy long sequences.\n";
+    print STDERR "${prefix}  Bioinformatics. 2016 Jul 15;32(14):2103-10.\n";
+    print STDERR "${prefix}  http://doi.org/10.1093/bioinformatics/btw152\n";
+    print STDERR "${prefix}\n";
+    print STDERR "${prefix}Corrected read consensus sequences are generated using an algorithm derived from FALCON-sense:\n";
+    print STDERR "${prefix}  Chin CS, et al.\n";
+    print STDERR "${prefix}  Phased diploid genome assembly with single-molecule real-time sequencing.\n";
+    print STDERR "${prefix}  Nat Methods. 2016 Dec;13(12):1050-1054.\n";
+    print STDERR "${prefix}  http://doi.org/10.1038/nmeth.4035\n";
+    print STDERR "${prefix}\n";
+    print STDERR "${prefix}Contig consensus sequences are generated using an algorithm derived from pbdagcon:\n";
+    print STDERR "${prefix}  Chin CS, et al.\n";
+    print STDERR "${prefix}  Nonhybrid, finished microbial genome assemblies from long-read SMRT sequencing data.\n";
+    print STDERR "${prefix}  Nat Methods. 2013 Jun;10(6):563-9\n";
+    print STDERR "${prefix}  http://doi.org/10.1038/nmeth.2474\n";
+    print STDERR "${prefix}\n";
+}
+
 
 
 
@@ -920,7 +966,7 @@ sub setDefaults () {
     #####  Unitig Filtering Options (also set in bogart/bogart.C)
 
     $global{"contigFilter"}                = "2 1000 0.75 0.75 2";
-    $synops{"contigFilter"}                = "Parameters to filter out 'unassembled' unitigs: minReads; minLength; singleReadSpan; lowCovFraction, lowCovDepth";
+    $synops{"contigFilter"}                = "Parameters to filter out 'unassembled' unitigs.  Five values: minReads minLength singleReadSpan lowCovFraction lowCovDepth";
 
     #####  Consensus Options
 
@@ -1386,6 +1432,20 @@ sub checkParameters () {
         }
 
         addCommandLineError($failureString)   if ($ok == 0);
+    }
+
+    {
+        my @v = split '\s+', getGlobal("contigFilter");
+
+        if (scalar(@v) != 5) {
+            addCommandLineError("contigFilter must have five values: minReads minLength singleReadSpan lowCovFraction lowCovDepth\n");
+        }
+
+        addCommandLineError("contigFilter 'minReads' must be a positive integer, currently $v[0]\n")          if (($v[0] < 0) || ($v[0] !~ m/^[0-9]+$/));
+        addCommandLineError("contigFilter 'minLength' must be a positive integer, currently $v[1]\n")         if (($v[1] < 0) || ($v[1] !~ m/^[0-9]+$/));
+        addCommandLineError("contigFilter 'singleReadSpan' must be between 0.0 and 1.0, currently $v[2]\n")   if (($v[2] < 0) || (1 < $v[2]) || ($v[2] !~ m/^[0-9]*\.{0,1}[0-9]*$/));
+        addCommandLineError("contigFilter 'lowCovFraction' must be between 0.0 and 1.0, currently $v[3]\n")   if (($v[3] < 0) || (1 < $v[3]) || ($v[3] !~ m/^[0-9]*\.{0,1}[0-9]*$/));
+        addCommandLineError("contigFilter 'lowCovDepth' must be a positive integer, currently $v[4]\n")       if (($v[4] < 0) || ($v[4] !~ m/^[0-9]+$/));
     }
 
     #

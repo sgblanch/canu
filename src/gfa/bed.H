@@ -15,7 +15,7 @@
  *
  *  Modifications by:
  *
- *    Brian P. Walenz beginning on 2016-OCT-03
+ *    Brian P. Walenz beginning on 2017-APR-04
  *      are a 'United States Government Work', and
  *      are released in the public domain
  *
@@ -23,38 +23,51 @@
  *  full conditions and disclaimers for each license.
  */
 
-#ifndef AS_BAT_CREATEUNITIGS_H
-#define AS_BAT_CREATEUNITIGS_H
+#ifndef AS_UTL_BED_H
+#define AS_UTL_BED_H
 
-#include "AS_BAT_ReadInfo.H"
-#include "AS_BAT_OverlapCache.H"
-#include "AS_BAT_BestOverlapGraph.H"
-#include "AS_BAT_AssemblyGraph.H"
-#include "AS_BAT_Logging.H"
-
-#include "AS_BAT_TigVector.H"
+#include "AS_global.H"
+#include "splitToWords.H"
 
 
-class tigLoc {
+
+class bedRecord {
 public:
-  tigLoc() {
-    cID  = UINT32_MAX;
-    cBgn = 0;
-    cEnd = 0;
-    uID  = UINT32_MAX;
-  };
+  bedRecord();
+  bedRecord(char *inLine);
+  ~bedRecord();
 
-  uint32   cID;
-  uint32   cBgn;
-  uint32   cEnd;
-  uint32   uID;    //  Debugging.
+  void    load(char *inLine);
+  void    save(FILE *outFile);
+
+public:
+  char   *_Aname;    //  The 'chromosome'
+  uint32  _Aid;      //  Canu specific.
+
+  int32   _bgn;
+  int32   _end;
+
+  char   *_Bname;    //  The 'feature'
+  uint32  _Bid;      //  Canu specific.
+
+  uint32  _score;
+  bool    _Bfwd;
+};
+
+
+class bedFile {
+public:
+  bedFile(char *inFile);
+  ~bedFile();
+
+  bool    loadFile(char *inFile);
+  bool    saveFile(char *outFile);
+
+public:
+  vector<bedRecord *>    _records;
 };
 
 
 
-void
-createUnitigs(TigVector        &contigs,
-              TigVector        &unitigs,
-              vector<tigLoc>   &unitigSource);
 
-#endif  //  AS_BAT_CREATEUNITIGS_H
+#endif  //  AS_UTL_BED_H

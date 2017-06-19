@@ -143,6 +143,11 @@ while (scalar(@ARGV)) {
     if     (($arg eq "-h") || ($arg eq "-help") || ($arg eq "--help")) {
         printHelp(1);
 
+    } elsif (($arg eq "-citation") || ($arg eq "--citation")) {
+        print STDERR "\n";
+        printCitation(undef);
+        exit(0);
+
     } elsif ($arg eq "-d") {
         $rootdir = shift @ARGV;
 
@@ -204,7 +209,6 @@ while (scalar(@ARGV)) {
         addCommandLineOption("'$arg'");
 
     } else {
-        print STDERR "INVALID $arg\n";
         addCommandLineError("ERROR:  Invalid command line option '$arg'.  Did you forget quotes around options with spaces?\n");
     }
 }
@@ -323,7 +327,13 @@ printHelp();
 #  Now that we know the bin directory, print the version so those pesky users
 #  will (hopefully) include it when they paste in logs.
 
-print "-- " . getGlobal("version") . "\n";
+print STDERR "-- " . getGlobal("version") . "\n";
+print STDERR "--\n";
+print STDERR "-- CITATIONS\n";
+print STDERR "--\n";
+printCitation("-- ");
+print STDERR "-- CONFIGURE CANU\n";
+print STDERR "--\n";
 
 #  Check java and gnuplot.
 
@@ -627,5 +637,7 @@ if (setOptions($mode, "assemble") eq "assemble") {
     }
 }
 
+print STDERR "--\n";
+print STDERR "-- Bye.\n";
 
 exit(0);

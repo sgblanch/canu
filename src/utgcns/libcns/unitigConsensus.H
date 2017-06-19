@@ -84,7 +84,8 @@ public:
                   map<uint32, gkRead *>     *inPackageRead     = NULL,
                   map<uint32, gkReadData *> *inPackageReadData = NULL);
 
-  bool   generatePBDAG(char aligner,
+  bool   generatePBDAG(char                       aligner,
+                       bool                       normalize,
                        tgTig                     *tig,
                        map<uint32, gkRead *>     *inPackageRead     = NULL,
                        map<uint32, gkReadData *> *inPackageReadData = NULL);
@@ -92,6 +93,10 @@ public:
   bool   generateQuick(tgTig                     *tig,
                        map<uint32, gkRead *>     *inPackageRead     = NULL,
                        map<uint32, gkReadData *> *inPackageReadData = NULL);
+
+  bool   generateSingleton(tgTig                     *tig,
+                           map<uint32, gkRead *>     *inPackageRead     = NULL,
+                           map<uint32, gkReadData *> *inPackageReadData = NULL);
 
   int32  initialize(map<uint32, gkRead *>     *inPackageRead,
                     map<uint32, gkReadData *> *inPackageReadData);
