@@ -78,8 +78,7 @@ ChunkGraph       *CG  = 0L;
 int
 main (int argc, char * argv []) {
   char      *gkpStorePath            = NULL;
-  char      *ovlStoreUniqPath        = NULL;
-  char      *ovlStoreReptPath        = NULL;
+  char      *ovlStorePath            = NULL;
 
   double    erateGraph               = 0.075;
   double    erateMax                 = 0.100;
@@ -93,10 +92,10 @@ main (int argc, char * argv []) {
   uint64    genomeSize               = 0;
 
   uint32    fewReadsNumber           = 2;      //  Parameters for labeling of unassembled; also set in pipelines/canu/Defaults.pm
-  uint32    tooShortLength           = 1000;
-  double    spanFraction             = 0.75;
-  double    lowcovFraction           = 0.75;
-  uint32    lowcovDepth              = 2;
+  uint32    tooShortLength           = 0;
+  double    spanFraction             = 1.0;
+  double    lowcovFraction           = 0.5;
+  uint32    lowcovDepth              = 5;
 
   double    deviationGraph           = 6.0;
   double    deviationBubble          = 6.0;
@@ -114,7 +113,9 @@ main (int argc, char * argv []) {
   char     *prefix                   = NULL;
 
   uint32    minReadLen               = 0;
-  uint32    minOverlap               = 500;
+  uint32    minOverlapLen            = 500;
+  uint32    minIntersectLen          = 500;
+  uint32    maxPlacements            = 2;
 
   argc = AS_configure(argc, argv);
 
@@ -128,12 +129,7 @@ main (int argc, char * argv []) {
       gkpStorePath = argv[++arg];
 
     } else if (strcmp(argv[arg], "-O") == 0) {
-      if      (ovlStoreUniqPath == NULL)
-        ovlStoreUniqPath = argv[++arg];
-      else if (ovlStoreReptPath == NULL)
-        ovlStoreReptPath = argv[++arg];
-      else
-        err.push_back(NULL);
+      ovlStorePath = argv[++arg];
 
     } else if (strcmp(argv[arg], "-gs") == 0) {
       genomeSize = strtoull(argv[++arg], NULL, 10);
@@ -172,19 +168,26 @@ main (int argc, char * argv []) {
         err.push_back(s);
       }
 
-    } else if (strcmp(argv[arg], "-RL") == 0) {
+    } else if ((strcmp(argv[arg], "-mr") == 0) ||
+               (strcmp(argv[arg], "-RL") == 0)) {    //  Deprecated
       minReadLen = atoi(argv[++arg]);
+    } else if ((strcmp(argv[arg], "-mo") == 0) ||
+               (strcmp(argv[arg], "-el") == 0)) {    //  Deprecated
+      minOverlapLen = atoi(argv[++arg]);
+
+    } else if (strcmp(argv[arg], "-mi") == 0) {
+      minIntersectLen = atoi(argv[++arg]);
+    } else if (strcmp(argv[arg], "-mp") == 0) {
+      maxPlacements = atoi(argv[++arg]);
 
     } else if (strcmp(argv[arg], "-threads") == 0) {
-      numThreads = atoi(argv[++arg]);
+      if ((numThreads = atoi(argv[++arg])) > 0)
+        omp_set_num_threads(numThreads);
 
     } else if (strcmp(argv[arg], "-eg") == 0) {
       erateGraph = atof(argv[++arg]);
     } else if (strcmp(argv[arg], "-eM") == 0) {
       erateMax = atof(argv[++arg]);
-
-    } else if (strcmp(argv[arg], "-el") == 0) {
-      minOverlap = atoi(argv[++arg]);
 
     } else if (strcmp(argv[arg], "-ca") == 0) {  //  Edge confused, based on absolute difference
       confusedAbsolute = atoi(argv[++arg]);
@@ -269,11 +272,11 @@ main (int argc, char * argv []) {
     arg++;
   }
 
-  if (erateGraph        < 0.0)     err.push_back("Invalid overlap error threshold (-eg option); must be at least 0.0.\n");
-  if (erateMax          < 0.0)     err.push_back("Invalid overlap error threshold (-eM option); must be at least 0.0.\n");
-  if (prefix           == NULL)    err.push_back("No output prefix name (-o option) supplied.\n");
-  if (gkpStorePath     == NULL)    err.push_back("No gatekeeper store (-G option) supplied.\n");
-  if (ovlStoreUniqPath == NULL)    err.push_back("No overlap store (-O option) supplied.\n");
+  if (erateGraph    < 0.0)     err.push_back("Invalid overlap error threshold (-eg option); must be at least 0.0.\n");
+  if (erateMax      < 0.0)     err.push_back("Invalid overlap error threshold (-eM option); must be at least 0.0.\n");
+  if (prefix       == NULL)    err.push_back("No output prefix name (-o option) supplied.\n");
+  if (gkpStorePath == NULL)    err.push_back("No gatekeeper store (-G option) supplied.\n");
+  if (ovlStorePath == NULL)    err.push_back("No overlap store (-O option) supplied.\n");
 
   if (err.size() > 0) {
     fprintf(stderr, "usage: %s -o outputName -O ovlStore -G gkpStore -T tigStore\n", argv[0]);
@@ -287,8 +290,11 @@ main (int argc, char * argv []) {
     fprintf(stderr, "\n");
     fprintf(stderr, "  -gs        Genome size in bases.\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "  -RL len    Force reads below 'len' bases to be singletons.\n");
-    fprintf(stderr, "               This WILL cause CGW to fail; diagnostic only.\n");
+    fprintf(stderr, "  -mr len    Force reads below 'len' bases to be singletons.\n");
+    fprintf(stderr, "  -mo len    Ignore overlaps shorter than 'len' bases.\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  -mi len    Create unitigs from contig intersections of at least 'len' bases.\n");
+    fprintf(stderr, "  -mp num    Create unitigs from contig intersections with at most 'num' placements.\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -nofilter [suspicious],[higherror],[lopsided],[spur]\n");
     fprintf(stderr, "             Disable filtering of:\n");
@@ -315,9 +321,6 @@ main (int argc, char * argv []) {
     fprintf(stderr, "    -eM 0.05   no more than 0.05 fraction (5.0%%) error in any overlap loaded into bogart\n");
     fprintf(stderr, "               the maximum used will ALWAYS be at leeast the maximum of the four error rates\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "  For all, the lower limit on overlap length\n");
-    fprintf(stderr, "    -el 500     no shorter than 40 bases\n");
-    fprintf(stderr, "\n");
     fprintf(stderr, "Overlap Storage\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "    -M gb    Use at most 'gb' gigabytes of memory for storing overlaps.\n");
@@ -332,9 +335,6 @@ main (int argc, char * argv []) {
       fprintf(stderr, "               %s\n", logFileFlagNames[l]);
     fprintf(stderr, "\n");
 
-    if ((ovlStoreUniqPath != NULL) && (ovlStoreUniqPath == ovlStoreReptPath))
-      fprintf(stderr, "Too many overlap stores (-O option) supplied.\n");
-
     for (uint32 ii=0; ii<err.size(); ii++)
       if (err[ii])
         fputs(err[ii], stderr);
@@ -343,28 +343,41 @@ main (int argc, char * argv []) {
   }
 
   fprintf(stderr, "\n");
-  fprintf(stderr, "Graph  error threshold  = %.3f (%.3f%%)\n", erateGraph,  erateGraph  * 100);
-  fprintf(stderr, "Max    error threshold  = %.3f (%.3f%%)\n", erateMax, erateMax * 100);
+  fprintf(stderr, "==> PARAMETERS.\n");
   fprintf(stderr, "\n");
-  fprintf(stderr, "Minimum overlap length = %u bases\n", minOverlap);
+  fprintf(stderr, "Resources:\n");
+  fprintf(stderr, "  Memory                " F_U64 " GB\n", ovlCacheMemory >> 30);
+  fprintf(stderr, "  Compute Threads       %d (%s)\n", omp_get_max_threads(), (numThreads > 0) ? "command line" : "OpenMP default");
   fprintf(stderr, "\n");
+  fprintf(stderr, "Lengths:\n");
+  fprintf(stderr, "  Minimum read          %u bases\n",     minReadLen);
+  fprintf(stderr, "  Minimum overlap       %u bases\n",     minOverlapLen);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Overlap Error Rates:\n");
+  fprintf(stderr, "  Graph                 %.3f (%.3f%%)\n", erateGraph, erateGraph  * 100);
+  fprintf(stderr, "  Max                   %.3f (%.3f%%)\n", erateMax,   erateMax    * 100);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Deviations:\n");
+  fprintf(stderr, "  Graph                 %.3f\n", deviationGraph);
+  fprintf(stderr, "  Bubble                %.3f\n", deviationBubble);
+  fprintf(stderr, "  Repeat                %.3f\n", deviationRepeat);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Edge Confusion:\n");
+  fprintf(stderr, "  Absolute              %d\n",   confusedAbsolute);
+  fprintf(stderr, "  Percent               %.4f\n", confusedPercent);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Unitig Construction:\n");
+  fprintf(stderr, "  Minimum intersection  %u bases\n",     minIntersectLen);
+  fprintf(stderr, "  Maxiumum placements   %u positions\n", maxPlacements);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Debugging Enabled:\n");
 
-  if (numThreads > 0) {
-    omp_set_num_threads(numThreads);
-    fprintf(stderr, "number of threads     = %d (command line)\n", numThreads);
-    fprintf(stderr, "\n");
-  } else {
-    fprintf(stderr, "number of threads     = %d (OpenMP default)\n", omp_get_max_threads());
-    fprintf(stderr, "\n");
-  }
+  if (logFileFlags == 0)
+    fprintf(stderr, "  (none)\n");
 
   for (uint64 i=0, j=1; i<64; i++, j<<=1)
     if (logFileFlagSet(j))
-      fprintf(stderr, "DEBUG                 = %s\n", logFileFlagNames[i]);
-
-  gkStore          *gkpStore     = gkStore::gkStore_open(gkpStorePath);
-  ovStore          *ovlStoreUniq = new ovStore(ovlStoreUniqPath, gkpStore);
-  ovStore          *ovlStoreRept = ovlStoreReptPath ? new ovStore(ovlStoreReptPath, gkpStore) : NULL;
+      fprintf(stderr, "  %s\n", logFileFlagNames[i]);
 
   writeStatus("\n");
   writeStatus("==> LOADING AND FILTERING OVERLAPS.\n");
@@ -372,16 +385,10 @@ main (int argc, char * argv []) {
 
   setLogFile(prefix, "filterOverlaps");
 
-  RI = new ReadInfo(gkpStore, prefix, minReadLen);
-  OC = new OverlapCache(gkpStore, ovlStoreUniq, ovlStoreRept, prefix, MAX(erateMax, erateGraph), minOverlap, ovlCacheMemory, genomeSize, doSave);
+  RI = new ReadInfo(gkpStorePath, prefix, minReadLen);
+  OC = new OverlapCache(ovlStorePath, prefix, MAX(erateMax, erateGraph), minOverlapLen, ovlCacheMemory, genomeSize, doSave);
   OG = new BestOverlapGraph(erateGraph, deviationGraph, prefix, filterSuspicious, filterHighError, filterLopsided, filterSpur);
   CG = new ChunkGraph(prefix);
-
-  delete ovlStoreUniq;  ovlStoreUniq = NULL;
-  delete ovlStoreRept;  ovlStoreRept = NULL;
-
-  gkpStore->gkStore_close();
-  gkpStore = NULL;
 
   //
   //  Build the initial unitig path from non-contained reads.  The first pass is usually the
@@ -406,7 +413,12 @@ main (int argc, char * argv []) {
 
   breakSingletonTigs(contigs);
 
-  reportOverlaps(contigs, prefix, "buildGreedy");
+  //  populateUnitig() uses only one hang from one overlap to compute the positions of reads.
+  //  Once all reads are (approximately) placed, compute positions using all overlaps.
+
+  contigs.optimizePositions(prefix, "buildGreedy");
+
+  //reportOverlaps(contigs, prefix, "buildGreedy");
   reportTigs(contigs, prefix, "buildGreedy", genomeSize);
 
   //
@@ -435,7 +447,15 @@ main (int argc, char * argv []) {
 
   placeUnplacedUsingAllOverlaps(contigs, prefix);
 
-  reportOverlaps(contigs, prefix, "placeContains");
+  //  Compute positions again.  This fixes issues with contains-in-contains that
+  //  tend to excessively shrink reads.  The one case debugged placed contains in
+  //  a three read nanopore contig, where one of the contained reads shrank by 10%,
+  //  which was enough to swap bgn/end coords when they were computed using hangs
+  //  (that is, sum of the hangs was bigger than the placed read length).
+
+  contigs.optimizePositions(prefix, "placeContains");
+
+  //reportOverlaps(contigs, prefix, "placeContains");
   reportTigs(contigs, prefix, "placeContains", genomeSize);
 
   //
@@ -454,8 +474,18 @@ main (int argc, char * argv []) {
   mergeOrphans(contigs, deviationBubble);
 
   //checkUnitigMembership(contigs);
-  reportOverlaps(contigs, prefix, "mergeOrphans");
+  //reportOverlaps(contigs, prefix, "mergeOrphans");
   reportTigs(contigs, prefix, "mergeOrphans", genomeSize);
+
+  //
+  //  Initial construction done.  Classify what we have as assembled or unassembled.
+  //
+
+  classifyTigsAsUnassembled(contigs,
+                            fewReadsNumber,
+                            tooShortLength,
+                            spanFraction,
+                            lowcovFraction, lowcovDepth);
 
   //
   //  Generate a new graph using only edges that are compatible with existing tigs.
@@ -489,10 +519,12 @@ main (int argc, char * argv []) {
 
   contigs.computeErrorProfiles(prefix, "repeats");
 
-  markRepeatReads(AG, contigs, deviationRepeat, confusedAbsolute, confusedPercent);
+  vector<confusedEdge>  confusedEdges;
+
+  markRepeatReads(AG, contigs, deviationRepeat, confusedAbsolute, confusedPercent, confusedEdges);
 
   //checkUnitigMembership(contigs);
-  reportOverlaps(contigs, prefix, "markRepeatReads");
+  //reportOverlaps(contigs, prefix, "markRepeatReads");
   reportTigs(contigs, prefix, "markRepeatReads", genomeSize);
 
   //
@@ -506,12 +538,12 @@ main (int argc, char * argv []) {
 
   setLogFile(prefix, "cleanupMistakes");
 
-  splitDiscontinuous(contigs, minOverlap);
+  splitDiscontinuous(contigs, minOverlapLen);
   promoteToSingleton(contigs);
 
   if (filterDeadEnds) {
     dropDeadEnds(AG, contigs);
-    splitDiscontinuous(contigs, minOverlap);
+    splitDiscontinuous(contigs, minOverlapLen);
     promoteToSingleton(contigs);
   }
 
@@ -528,12 +560,6 @@ main (int argc, char * argv []) {
 
   setLogFile(prefix, "generateOutputs");
 
-  classifyTigsAsUnassembled(contigs,
-                            fewReadsNumber,
-                            tooShortLength,
-                            spanFraction,
-                            lowcovFraction, lowcovDepth);
-
   //checkUnitigMembership(contigs);
   reportOverlaps(contigs, prefix, "final");
   reportTigs(contigs, prefix, "final", genomeSize);
@@ -544,36 +570,7 @@ main (int argc, char * argv []) {
   AG = NULL;
 
   //
-  //  Generate outputs.  The graph MUST come after output, because it needs
-  //  the tigStore tigID.
-  //
-
-  setParentAndHang(contigs);
-  writeTigsToStore(contigs, prefix, "ctg", true);
-
-  vector<tigLoc>  unitigSource;  //  Needed only to pass something to reportTigGraph.
-
-  setLogFile(prefix, "tigGraph");
-
-  reportTigGraph(contigs, unitigSource, prefix, "contigs");
-
-  //
-  //  Generate unitigs
-  //
-  //  We want to split the contigs at any potential bubble, so this needs to be
-  //  at least the 'bubble' deviation.  We don't really want to split at confirmed
-  //  repeats, but we have no way of telling repeat from bubble yet.
-  //
-
-  writeStatus("\n");
-  writeStatus("==> GENERATE UNITIGS.\n");
-  writeStatus("\n");
-
-  setLogFile(prefix, "generateUnitigs");
-
-  contigs.computeErrorProfiles(prefix, "generateUnitigs");
-  contigs.reportErrorProfiles(prefix, "generateUnitigs");
-
+  //  unitigSource:
   //
   //  We want some way of tracking unitigs that came from the same contig.  Ideally,
   //  we'd be able to emit only the edges that would join unitigs into the original
@@ -590,27 +587,52 @@ main (int argc, char * argv []) {
   //  good first attempt.
   //
 
-  createUnitigs(contigs, unitigs, unitigSource);
+  vector<tigLoc>  unitigSource;
 
-  splitDiscontinuous(unitigs, minOverlap, unitigSource);
+  //  The graph must come first, to find circular contigs.
 
-  setParentAndHang(unitigs);
-  writeTigsToStore(unitigs, prefix, "utg", true);
+  reportTigGraph(contigs, unitigSource, prefix, "contigs");
+
+  setParentAndHang(contigs);
+  writeTigsToStore(contigs, prefix, "ctg", true);
 
   setLogFile(prefix, "tigGraph");
 
+  writeStatus("\n");
+  writeStatus("==> GENERATE UNITIGS.\n");
+  writeStatus("\n");
+
+  setLogFile(prefix, "generateUnitigs");
+
+  contigs.computeErrorProfiles(prefix, "generateUnitigs");
+  contigs.reportErrorProfiles(prefix, "generateUnitigs");
+
+  createUnitigs(contigs, unitigs, minIntersectLen, maxPlacements, confusedEdges, unitigSource);
+
+  splitDiscontinuous(unitigs, minOverlapLen, unitigSource);
+
   reportTigGraph(unitigs, unitigSource, prefix, "unitigs");
+
+  setParentAndHang(unitigs);
+  writeTigsToStore(unitigs, prefix, "utg", true);
 
   //
   //  Tear down bogart.
   //
 
+  //  How bizarre.  Human regression of 2017-07-28-2128 deadlocked (apparently) when deleting OC.
+  //  It had 31 threads in futex_wait, thread 1 was in delete of the second block of data.  CPU
+  //  usage was 100% IIRC.  Reproducable, at least twice, possibly three times.  setLogFilePrefix
+  //  was moved before the deletes in hope that it'll close down threads.  Certainly, it should
+  //  close thread output files from createUnitigs.
+
+  setLogFile(prefix, NULL);    //  Close files.
+  omp_set_num_threads(1);      //  Hopefully kills off other threads.
+
   delete CG;
   delete OG;
   delete OC;
   delete RI;
-
-  setLogFile(prefix, NULL);
 
   writeStatus("\n");
   writeStatus("Bye.\n");

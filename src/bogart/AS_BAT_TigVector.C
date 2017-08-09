@@ -151,10 +151,6 @@ Unitig *&operator[](uint32 i) {
 
 
 
-
-
-
-
 void
 TigVector::computeArrivalRate(const char *prefix, const char *label) {
   uint32  tiLimit = size();
@@ -214,6 +210,8 @@ TigVector::computeErrorProfiles(const char *prefix, const char *label) {
 
     tig->computeErrorProfile(prefix, label);
   }
+
+  writeStatus("computeErrorProfiles()-- Finished.\n");
 }
 
 

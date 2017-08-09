@@ -1037,18 +1037,21 @@ sub generateCorrectedReads ($) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " read correction jobs failed:\n";
-            print STDERR $failureMessage;
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to generate corrected reads.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Read correction jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Read correction jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -1504,12 +1507,14 @@ sub dumpCorrectedReads ($) {
             }
         }
         close(F);
+
+        print STDERR "-- Purged $Nsuccess .dump.success sentinels.\n"   if ($Nsuccess > 0);
+        print STDERR "-- Purged $Nfasta .fasta outputs.\n"              if ($Nfasta > 0);
+        print STDERR "-- Purged $Nerr .err outputs.\n"                  if ($Nerr > 0);
+        print STDERR "-- Purged $Nlog .out job log outputs.\n"          if ($Nlog > 0);
     }
 
-    print STDERR "-- Purged $Nsuccess .dump.success sentinels.\n"   if ($Nsuccess > 0);
-    print STDERR "-- Purged $Nfasta .fasta outputs.\n"              if ($Nfasta > 0);
-    print STDERR "-- Purged $Nerr .err outputs.\n"                  if ($Nerr > 0);
-    print STDERR "-- Purged $Nlog .out job log outputs.\n"          if ($Nlog > 0);
+    remove_tree("correction/$asm.ovlStore")   if (getGlobal("saveOverlaps") eq "0");
 
   finishStage:
     emitStage($asm, "cor-dumpCorrectedReads");

@@ -44,6 +44,7 @@ require Exporter;
 
 use strict;
 use File::Basename;   #  dirname
+use File::Path 2.08 qw(make_path remove_tree);
 
 use POSIX qw(ceil);
 use canu::Defaults;
@@ -209,8 +210,7 @@ sub overlapStoreConfigure ($$$) {
         #print F "\n";
         print F getBinDirectoryShellCode();
         print F "\n";
-        print F getLimitShellCode("processes");
-        print F getLimitShellCode("files");
+        print F getLimitShellCode();
         print F "\n";
         print F "\$bin/ovStoreBuild \\\n";
         print F " -G ./$asm.gkpStore \\\n";
@@ -286,8 +286,7 @@ sub overlapStoreConfigure ($$$) {
         print F "  rm -rf \"./create\$bn\"\n";
         print F "fi\n";
         print F "\n";
-        print F getLimitShellCode("processes");
-        print F getLimitShellCode("files");
+        print F getLimitShellCode();
         print F "\n";
         print F "\$bin/ovStoreBucketizer \\\n";
         print F "  -O . \\\n";
@@ -296,14 +295,6 @@ sub overlapStoreConfigure ($$$) {
         #print F "  -e " . getGlobal("") . " \\\n"  if (defined(getGlobal("")));
         print F "  -job \$jobid \\\n";
         print F "  -i   \$jn\n";
-        print F "\n";
-        print F "if [ \$? = 0 ] ; then\n";
-        print F "  echo Success.\n";
-        print F "  exit 0\n";
-        print F "else\n";
-        print F "  echo Failure.\n";
-        print F "  exit 1\n";
-        print F "fi\n";
         close(F);
     }
 
@@ -321,8 +312,7 @@ sub overlapStoreConfigure ($$$) {
         print F "\n";
         print F getBinDirectoryShellCode();
         print F "\n";
-        print F getLimitShellCode("processes");
-        print F getLimitShellCode("files");
+        print F getLimitShellCode();
         print F "\n";
         print F "\$bin/ovStoreSorter \\\n";
         print F "  -deletelate \\\n";  #  Choices -deleteearly -deletelate or nothing
@@ -331,14 +321,6 @@ sub overlapStoreConfigure ($$$) {
         print F "  -G ../$asm.gkpStore \\\n";
         print F "  -F $numSlices \\\n";
         print F "  -job \$jobid $numInputs\n";
-        print F "\n";
-        print F "if [ \$? = 0 ] ; then\n";
-        print F "  echo Success.\n";
-        print F "  exit 0\n";
-        print F "else\n";
-        print F "  echo Failure.\n";
-        print F "  exit 1\n";
-        print F "fi\n";
         close(F);
     }
 
@@ -358,14 +340,6 @@ sub overlapStoreConfigure ($$$) {
         #print F "  -nodelete \\\n";  #  Choices -nodelete or nothing
         print F "  -O . \\\n";
         print F "  -F $numSlices\n";
-        print F "\n";
-        print F "if [ \$? = 0 ] ; then\n";
-        print F "  echo Success.\n";
-        print F "  exit 0\n";
-        print F "else\n";
-        print F "  echo Failure.\n";
-        print F "  exit 1\n";
-        print F "fi\n";
         close(F);
     }
 
@@ -436,19 +410,21 @@ sub overlapStoreBucketizerCheck ($$$) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " overlap store bucketizer jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to overlapStoreBucketize.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Overlap store bucketizer jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Overlap store bucketizer jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -533,19 +509,22 @@ sub overlapStoreSorterCheck ($$$) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " overlap store sorter jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to overlapStoreSorter.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Overlap store sorting jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Overlap store sorting jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -570,7 +549,6 @@ sub overlapStoreSorterCheck ($$$) {
 
 
 
-
 sub createOverlapStoreParallel ($$$) {
     my $base    = shift @_;
     my $asm     = shift @_;
@@ -587,6 +565,51 @@ sub createOverlapStoreParallel ($$$) {
 
     rename $path, "$base/$asm.ovlStore";
 }
+
+
+
+sub checkOverlapStore ($$) {
+    my $base    = shift @_;
+    my $asm     = shift @_;
+
+    my $bin   = getBinDirectory();
+    my $cmd;
+
+    $cmd  = "$bin/ovStoreDump \\\n";
+    $cmd .= " -G ./$asm.gkpStore \\\n";
+    $cmd .= " -O ./$asm.ovlStore \\\n";
+    $cmd .= " -d -counts \\\n";
+    $cmd .= " > ./$asm.ovlStore/counts.dat 2> ./$asm.ovlStore/counts.err";
+
+    print STDERR "-- Checking store.\n";
+
+    if (runCommand($base, $cmd)) {
+        caExit("failed to dump counts of overlaps; invalid store?", "./$asm.ovlStore/counts.err");
+    }
+
+    my $totOvl   = 0;
+    my $nulReads = 0;
+    my $ovlReads = 0;
+
+    open(F, "< ./$base/$asm.ovlStore/counts.dat") or die;
+    while (<F>) {
+        my @v = split '\s+', $_;
+
+        $nulReads += 1       if ($v[1] < 1);
+        $ovlReads += 1       if ($v[1] > 0);
+        $totOvl   += $v[1];
+    }
+    close(F);
+
+    print STDERR "--\n";
+    print STDERR "-- Overlap store '$base/$asm.ovlStore' successfully constructed.\n";
+    print STDERR "-- Found $totOvl overlaps for $ovlReads reads; $nulReads reads have no overlaps.\n";
+    print STDERR "--\n";
+
+    unlink "./$base/$asm.ovlStore/counts.dat";
+    unlink "./$base/$asm.ovlStore/counts.err";
+}
+
 
 
 sub generateOverlapStoreStats ($$) {
@@ -611,16 +634,6 @@ sub generateOverlapStoreStats ($$) {
     }
 
     unlink "$base/$asm.ovlStore.summary.err";
-
-    my $report;
-
-    open(F, "< $base/$asm.ovlStore.summary") or caExit("Failed to open overlap store statistics in '$base/$asm.ovlStore.summary': $!", undef);
-    while (<F>) {
-        $report .= "-- $_";
-    }
-    close(F);
-
-    addToReport("overlaps", $report);
 }
 
 
@@ -648,13 +661,24 @@ sub createOverlapStore ($$$) {
     createOverlapStoreSequential($base, $asm, $tag)  if ($seq eq "sequential");
     createOverlapStoreParallel  ($base, $asm, $tag)  if ($seq eq "parallel");
 
-    print STDERR "--\n";
-    print STDERR "-- Overlap store '$base/$asm.ovlStore' successfully constructed.\n";
+    checkOverlapStore($base, $asm);
 
     goto finishStage  if (getGlobal("saveOverlaps") eq "1");
 
-    #  Delete the inputs and directories.  Some contortions are needed to get directory deletes in order.
-    #  In particular, mhap's queries directory needs to be deleted after it's subdirectories are.
+    #  Delete the inputs and directories.
+    #
+    #    Directories - Viciously remove the whole thing (after all files are deleted, so we
+    #                  can get the sizes).
+    #    Files       - Sum the size, remove the file, and try to remove the directory.  In
+    #                  particular, we don't want to remove_tree() this directory - there could
+    #                  be other stuff in it - only remove if empty.
+    #
+    #  Ideally, every directory we have in our list should be empty after we delete the files in the
+    #  list.  But they won't be.  Usually because there are empty directories in there too.  Maybe
+    #  some stray files we didn't track.  Regardless, just blow them away.
+    #
+    #  Previous (to July 2017) versions tried to gently rmdir things, but it was ugly and didn't
+    #  quite work.
 
     my %directories;
     my $bytes = 0;
@@ -671,51 +695,35 @@ sub createOverlapStore ($$$) {
         while (<F>) {
             chomp;
 
-            #  Decide what to do.  Directories - register for later deletion.  Files - sum size and
-            #  delete.
-
             if (-d "$base/$_") {
-                $directories{"$base/$_"}++;
+            print STDERR "DIRECTORY $base/$_\n";
+                $directories{$_}++;
 
             } elsif (-e "$base/$_") {
+            print STDERR "FILE $base/$_\n";
                 $bytes += -s "$base/$_";
                 $files += 1;
 
                 unlink "$base/$_";
+                rmdir dirname("$base/$_");  #  Try to rmdir the directory the file is in.  If empty, yay!
             }
-
-            #  If the path isn't a directory register the directory it is in for deletion.
-
-            $directories{dirname("$base/$_")}++   if (! -d "$base/$_");
         }
         close(F);
-
-        unlink $file;
+    }
+    
+    foreach my $dir (keys %directories) {
+        print STDERR "REMOVE TREE $base/$dir\n";
+        remove_tree("$base/$dir");
     }
 
-    #  Ideally, every directory we have in our list should be empty.  But they won't be.  So, loop until we fail to delete anything.
-
-    my $dirs = 0;
-    my $deleted = 1;
-
-    while ($deleted > 0) {
-        $deleted = 0;
-
-        foreach my $dir (keys %directories) {
-            if (-d $dir) {
-                rmdir $dir;
-                $dirs++;
-            }
-
-            if (! -d $dir) {  #  If really removed, remove it from our list.
-                delete $directories{$dir};
-                $deleted++;
-            }
-        }
-    }
+    unlink "$base/1-overlapper/ovljob.files";
+    unlink "$base/1-overlapper/ovljob.more.files";
+    unlink "$base/1-overlapper/mhap.files";
+    unlink "$base/1-overlapper/mmap.files";
+    unlink "$base/1-overlapper/precompute.files";
 
     print STDERR "--\n";
-    print STDERR "-- Purged ", int(1000 * $bytes / 1024 / 1024 / 1024) / 1000, " GB in $files overlap output files and $dirs directories.\n";
+    print STDERR "-- Purged ", int(1000 * $bytes / 1024 / 1024 / 1024) / 1000, " GB in $files overlap output files.\n";
 
     #  Now all done!
 
@@ -729,14 +737,19 @@ sub createOverlapStore ($$$) {
         print STDERR "-- Overlap store '$base/$asm.ovlStore' contains:\n";
         print STDERR "--\n";
 
+        my $report;
+
         open(F, "< $base/$asm.ovlStore.summary") or caExit("Failed to open overlap store statistics in '$base/$asm.ovlStore': $!", undef);
         while (<F>) {
-            print STDERR "--   $_";
+            $report .= "--   $_";
         }
         close(F);
 
+        addToReport("overlaps", $report);   #  Also shows it.
+
     } else {
         print STDERR "-- Overlap store '$base/$asm.ovlStore' statistics not available (skipped in correction and trimming stages).\n";
+        print STDERR "--\n";
     }
 
     emitStage($asm, "$tag-createOverlapStore");

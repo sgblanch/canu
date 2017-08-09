@@ -69,17 +69,41 @@ sub mmapConfigure ($$$) {
     goto allDone   if (-e "$base/$asm.ovlStore");
     goto allDone   if (fileExists("$base/$asm.ovlStore.tar"));
 
+    my $numPacBioRaw         = 0;
+    my $numPacBioCorrected   = 0;
+    my $numNanoporeRaw       = 0;
+    my $numNanoporeCorrected = 0;
+
+    open(L, "< $base/$asm.gkpStore/libraries.txt") or caExit("can't open '$base/$asm.gkpStore/libraries.txt' for reading: $!", undef);
+    while (<L>) {
+        $numPacBioRaw++           if (m/pacbio-raw/);
+        $numPacBioCorrected++     if (m/pacbio-corrected/);
+        $numNanoporeRaw++         if (m/nanopore-raw/);
+        $numNanoporeCorrected++   if (m/nanopore-corrected/);
+    }
+    close(L);
+    my $parameters = "";
+    if ($numPacBioRaw > 0) {
+       $parameters = "-x ava-pb";
+    } elsif ($numNanoporeRaw > 0) {
+       $parameters = "-x ava-ont";
+    } elsif ($numPacBioCorrected > 0) {
+       $parameters = "-x ava-pb -c -Hk21 -w14"; #tuned to find 1000bp 5% error
+    } elsif ($numNanoporeCorrected > 0) {
+       $parameters = "-x ava-ont -c -k17 -w11"; #tuned to find 1000bp 15% error 
+    } else {
+       caFailiure("--ERROR: no know read types found in $base/$asm.gkpStore/libraries.txt")
+    }  
+
     print STDERR "--\n";
-    print STDERR "-- OVERLAPPER (mmap) (correction)\n"  if ($tag eq "cor");
-    print STDERR "-- OVERLAPPER (mmap) (trimming)\n"    if ($tag eq "obt");
-    print STDERR "-- OVERLAPPER (mmap) (assembly)\n"    if ($tag eq "utg");
+    print STDERR "-- OVERLAPPER (mmap) (correction) with $parameters\n"  if ($tag eq "cor");
+    print STDERR "-- OVERLAPPER (mmap) (trimming) with $parameters\n"    if ($tag eq "obt");
+    print STDERR "-- OVERLAPPER (mmap) (assembly) with $parameters\n"    if ($tag eq "utg");
     print STDERR "--\n";
 
     make_path($path) if (! -d $path);
 
     #  Constants.
-
-    my $merSize       = getGlobal("${tag}MMapMerSize");
 
     my $numReads      = getNumberOfReadsInStore($base, $asm);
     my $memorySize    = getGlobal("${tag}mmapMemory");
@@ -247,8 +271,29 @@ sub mmapConfigure ($$$) {
     print F "  -o ./blocks/\$job.input \\\n";
     print F "&& \\\n";
     print F "mv -f ./blocks/\$job.input.fasta ./blocks/\$job.fasta\n";
+    print F "if [ ! -e ./blocks/\$job.fasta ] ; then\n";
+    print F "  echo Failed to extract fasta.\n";
+    print F "  exit 1\n";
+    print F "fi\n";
     print F "\n";
-    print F stashFileShellCode("$base/1-overlapper/blocks", "\$job.fasta", "");
+    print F "\n";
+    print F "echo \"\"\n";
+    print F "echo Starting mmap precompute.\n";
+    print F "echo \"\"\n";
+    print F "\n";
+    print F "  \$bin/minimap2 \\\n";
+    print F "    $parameters -t ", getGlobal("${tag}mmapThreads"), " \\\n";
+    print F "    -d ./blocks/\$job.input.mmi\\\n";
+    print F "    ./blocks/\$job.fasta \\\n";
+    print F "&& \\\n";
+    print F "mv -f ./blocks/\$job.input.mmi ./blocks/\$job.mmi\n";
+    print F "\n";
+    print F "if [ ! -e ./blocks/\$job.mmi ] ; then\n";
+    print F "  echo MMap failed.\n";
+    print F "  exit 1\n";
+    print F "fi\n";
+    print F "\n";
+    print F stashFileShellCode("$base/1-overlapper/blocks", "\$job.mmi", "");
     print F "\n";
     print F "exit 0\n";
 
@@ -300,7 +345,7 @@ sub mmapConfigure ($$$) {
     print F "fi\n";
     print F "\n";
 
-    print F fetchFileShellCode("$path", "blocks/\$blk.fasta", "");
+    print F fetchFileShellCode("$path", "blocks/\$blk.mmi", "");
 
     print F "for ii in `ls ./queries/\$qry` ; do\n";
     print F "  echo Fetch blocks/\$ii\n";
@@ -314,13 +359,9 @@ sub mmapConfigure ($$$) {
     print F "if [ x\$slf = x ]; then\n";
     print F "   >  ./results/\$qry.mmap.WORKING\n";
     print F "else\n";
-    print F "  \$bin/minimap \\\n";
-    print F "    -k $merSize \\\n";
-    print F "    -Sw5 \\\n";
-    print F "     -L100 \\\n";
-    print F "     -m0  \\\n";
-    print F "    -t ", getGlobal("${tag}mmapThreads"), " \\\n";
-    print F "    ./blocks/\$blk.fasta \\\n";
+    print F "  \$bin/minimap2 \\\n";
+    print F "    $parameters -t ", getGlobal("${tag}mmapThreads"), " \\\n";
+    print F "    ./blocks/\$blk.mmi \\\n";
     print F "    ./blocks/\$blk.fasta \\\n";
     print F "  > ./results/\$qry.mmap.WORKING \n";
     print F " \n";
@@ -328,13 +369,9 @@ sub mmapConfigure ($$$) {
     print F "\n";
 
     print F "for file in `ls queries/\$qry/*.fasta`; do\n";
-    print F "  \$bin/minimap \\\n";
-    print F "    -k $merSize \\\n";
-    print F "    -Sw5 \\\n";
-    print F "     -L100 \\\n";
-    print F "     -m0  \\\n";
-    print F "    -t ", getGlobal("${tag}mmapThreads"), " \\\n";
-    print F "    ./blocks/\$blk.fasta \\\n";
+    print F "  \$bin/minimap2 \\\n";
+    print F "    $parameters -t ", getGlobal("${tag}mmapThreads"), " \\\n";
+    print F "    ./blocks/\$blk.mmi \\\n";
     print F "    \$file \\\n";
     print F "  >> ./results/\$qry.mmap.WORKING \n";
     print F "done\n";
@@ -347,6 +384,9 @@ sub mmapConfigure ($$$) {
     print F "  \$bin/mmapConvert \\\n";
     print F "    -G ../$asm.gkpStore \\\n";
     print F "    -o ./results/\$qry.mmap.ovb.WORKING \\\n";
+    print F "    -partial \\\n"  if ($typ eq "partial");
+    print F "    -tolerance 100 \\\n" if ($typ eq "normal");
+    print F "    -len "  , getGlobal("minOverlapLength"),  " \\\n";
     print F "    ./results/\$qry.mmap \\\n";
     print F "  && \\\n";
     print F "  mv ./results/\$qry.mmap.ovb.WORKING ./results/\$qry.mmap.ovb\n";
@@ -457,10 +497,10 @@ sub mmapPrecomputeCheck ($$$) {
     open(F, "< $path/precompute.sh") or caFailure("can't open '$path/precompute.sh' for reading: $!", undef);
     while (<F>) {
         if (m/^\s+job=\"(\d+)\"$/) {
-            if (fileExists("$path/blocks/$1.fasta")) {
-                push @successJobs, "1-overlapper/blocks/$1.fasta\n";
+            if (fileExists("$path/blocks/$1.mmi")) {
+                push @successJobs, "1-overlapper/blocks/$1.mmi\\n";
             } else {
-                $failureMessage .= "--   job 1-overlapper/blocks/$1.fasta FAILED.\n";
+                $failureMessage .= "--   job $path/blocks/$1.fasta FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 
@@ -473,19 +513,21 @@ sub mmapPrecomputeCheck ($$$) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " mmap precompute jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to precompute mmap indices.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- MiniMap precompute jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- MiniMap precompute jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -573,7 +615,7 @@ sub mmapCheck ($$$) {
                 push @miscJobs,    "1-overlapper/results/$1.counts\n";
 
             } else {
-                $failureMessage .= "--   job 1-overlapper/results/$1.ovb FAILED.\n";
+                $failureMessage .= "--   job $path/results/$1.ovb FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 
@@ -585,7 +627,7 @@ sub mmapCheck ($$$) {
     #  Also find the queries symlinks so we can remove those.  And the query directories, because
     #  the last directory can be empty, and so we'd never see it at all if only finding files.
 
-    open(F, "find $path/queries -print |");
+    open(F, "cd $base && find 1-overlapper/queries -print |");
     while (<F>) {
         push @mmapJobs, $_;
     }
@@ -595,19 +637,21 @@ sub mmapCheck ($$$) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " mmap jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to compute mmap overlaps.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- MiniMap overlap jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- MiniMap overlap jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.

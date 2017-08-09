@@ -191,7 +191,7 @@ sub unitig ($) {
     print F "\n";
     print F getJobIDShellCode();
     print F "\n";
-    print F "if [ -e unitigging/$asm.ctgStore/seqDB.v001.tig -a -e unitigging/$asm.utgStore/seqDB.v001.tig ] ; then\n";
+    print F "if [ -e ../$asm.ctgStore/seqDB.v001.tig -a -e ../$asm.utgStore/seqDB.v001.tig ] ; then\n";
     print F "  exit 0\n";
     print F "fi\n";
     print F "\n";
@@ -204,7 +204,7 @@ sub unitig ($) {
         print F " -gs "             . getGlobal("genomeSize")         . " \\\n";
         print F " -eg "             . getGlobal("utgErrorRate")       . " \\\n";
         print F " -eM "             . getGlobal("utgErrorRate")       . " \\\n";
-        print F " -el "             . $overlapLength                  . " \\\n";
+        print F " -mo "             . $overlapLength                  . " \\\n";
         print F " -dg "             . getGlobal("utgGraphDeviation")  . " \\\n";
         print F " -db "             . getGlobal("utgGraphDeviation")  . " \\\n";
         print F " -dr "             . getGlobal("utgRepeatDeviation") . " \\\n";
@@ -274,18 +274,19 @@ sub unitigCheck ($) {
     #  shows how to process multiple jobs.  This only checks for the existence of the final outputs.
     #  (meryl is the same)
 
-    #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-    if ($attempt > 1) {
-        print STDERR "--\n";
-        print STDERR "-- Unitigger failed.\n";
-        print STDERR "--\n";
-    }
-
     #  If too many attempts, give up.
 
-    if ($attempt > getGlobal("canuIterationMax")) {
-        caExit("failed to generate unitigs.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+    if ($attempt >= getGlobal("canuIterationMax")) {
+        print STDERR "--\n";
+        print STDERR "-- Bogart failed, tried $attempt times, giving up.\n";
+        print STDERR "--\n";
+        caExit(undef, undef);
+    }
+
+    if ($attempt > 0) {
+        print STDERR "--\n";
+        print STDERR "-- Bogart failed, retry\n";
+        print STDERR "--\n";
     }
 
     #  Otherwise, run some jobs.

@@ -355,41 +355,34 @@ sub getJobIDShellCode () {
 #  Emits a block of shell code to change shell imposed limit on the number of open files and
 #  processes.
 #
-sub getLimitShellCode ($) {
-    my $which = shift @_;
+sub getLimitShellCode () {
     my $string;
 
-    if ($which eq "processes") {
-        $string .= "\n";
-        $string .= "max=`ulimit -Hu`\n";
-        $string .= "bef=`ulimit -Su`\n";
-        $string .= "if [ \$bef -lt \$max ] ; then\n";
-        $string .= "  ulimit -Su \$max\n";
-        $string .= "  aft=`ulimit -Su`\n";
-        $string .= "  echo \"Changed max processes per user from \$bef to \$aft (max \$max).\"\n";
-        $string .= "  echo \"\"\n";
-        $string .= "else\n";
-        $string .= "  echo \"Max processes per user limited to \$bef, no increase possible.\"\n";
-        $string .= "  echo \"\"\n";
-        $string .= "fi\n";
-        $string .= "\n";
-    }
-
-    if ($which eq "files") {
-        $string .= "\n";
-        $string .= "max=`ulimit -Hn`\n";
-        $string .= "bef=`ulimit -Sn`\n";
-        $string .= "if [ \$bef -lt \$max ] ; then\n";
-        $string .= "  ulimit -Sn \$max\n";
-        $string .= "  aft=`ulimit -Sn`\n";
-        $string .= "  echo \"Changed max open files from \$bef to \$aft (max \$max).\"\n";
-        $string .= "  echo \"\"\n";
-        $string .= "else\n";
-        $string .= "  echo \"Max open files limited to \$bef, no increase possible.\"\n";
-        $string .= "  echo \"\"\n";
-        $string .= "fi\n";
-        $string .= "\n";
-    }
+    $string .= "echo \"\"\n";
+    $string .= "echo \"Attempting to increase maximum allowed processes and open files.\"";
+    $string .= "\n";
+    $string .= "max=`ulimit -Hu`\n";
+    $string .= "bef=`ulimit -Su`\n";
+    $string .= "if [ \$bef -lt \$max ] ; then\n";
+    $string .= "  ulimit -Su \$max\n";
+    $string .= "  aft=`ulimit -Su`\n";
+    $string .= "  echo \"  Changed max processes per user from \$bef to \$aft (max \$max).\"\n";
+    $string .= "else\n";
+    $string .= "  echo \"  Max processes per user limited to \$bef, no increase possible.\"\n";
+    $string .= "fi\n";
+    $string .= "\n";
+    $string .= "max=`ulimit -Hn`\n";
+    $string .= "bef=`ulimit -Sn`\n";
+    $string .= "if [ \$bef -lt \$max ] ; then\n";
+    $string .= "  ulimit -Sn \$max\n";
+    $string .= "  aft=`ulimit -Sn`\n";
+    $string .= "  echo \"  Changed max open files from \$bef to \$aft (max \$max).\"\n";
+    $string .= "else\n";
+    $string .= "  echo \"  Max open files limited to \$bef, no increase possible.\"\n";
+    $string .= "fi\n";
+    $string .= "\n";
+    $string .= "echo \"\"\n";
+    $string .= "\n";
 
     return($string);
 }
@@ -852,6 +845,18 @@ sub buildThreadOption ($) {
 }
 
 
+sub purgeGridJobSubmitScripts ($$) {
+    my $path    = shift @_;
+    my $script  = shift @_;
+    my $idx     = "01";
+
+    while (-e "$path/$script.jobSubmit-$idx.sh") {
+        unlink "$path/$script.jobSubmit-$idx.sh";
+        $idx++;
+    }
+}
+
+
 sub buildGridJob ($$$$$$$$$) {
     my $asm     = shift @_;
     my $jobType = shift @_;
@@ -902,12 +907,18 @@ sub buildGridJob ($$$$$$$$$) {
     $opts .= "$outputOption "   if (defined($outputOption));
     $opts =~ s/\s+$//;
 
+    #  Find a unique file name to save the command.
+
+    my $idx = "01";
+
+    while (-e "$path/$script.jobSubmit-$idx.sh") {
+        $idx++;
+    }
+
     #  Build and save the command line.  Return the command PREFIX (we'll be adding .sh and .out as
     #  appropriate), and the job name it will be submitted with (which isn't expected to be used).
 
-    my $cmd;
-
-    open(F, "> $path/$script.jobSubmit.sh") or die;
+    open(F, "> $path/$script.jobSubmit-$idx.sh") or die;
     print F "#!/bin/sh\n";
     print F "\n";
     print F "$submitCommand \\\n";
@@ -915,12 +926,12 @@ sub buildGridJob ($$$$$$$$$) {
     print F "  $nameOption \"$jobName\" \\\n";
     print F "  $arrayOpt \\\n";
     print F "  ./$script.sh $arrayOff \\\n";
-    print F "> ./$script.jobSubmit.out 2>&1\n";
+    print F "> ./$script.jobSubmit-$idx.out 2>&1\n";
     close(F);
 
-    makeExecutable("$path/$script.jobSubmit.sh");
+    makeExecutable("$path/$script.jobSubmit-$idx.sh");
 
-    return("$script.jobSubmit", $jobName);
+    return("$script.jobSubmit-$idx", $jobName);
 }
 
 
@@ -1099,6 +1110,8 @@ sub submitOrRunParallelJob ($$$$@) {
 
         print STDERR "--\n";
 
+        purgeGridJobSubmitScripts($path, $script);
+
         foreach my $j (@jobs) {
             my ($cmd, $jobName) = buildGridJob($asm, $jobType, $path, $script, $mem, $thr, $dsk, $j, undef);
 
@@ -1208,6 +1221,8 @@ sub submitOrRunParallelJob ($$$$@) {
         print STDERR "\n";
         print STDERR "Please run the following commands to submit jobs to the grid for execution using $mem gigabytes memory and $thr threads:\n";
         print STDERR "\n";
+
+        purgeGridJobSubmitScripts($path, $script);
 
         foreach my $j (@jobs) {
             my  $cwd = getcwd();
@@ -1449,10 +1464,10 @@ sub caExit ($$) {
     print STDERR "ABORT: Don't panic, but a mostly harmless error occurred and Canu stopped.\n";
     print STDERR "ABORT: Try restarting.  If that doesn't work, ask for help.\n";
     print STDERR "ABORT:\n";
-    print STDERR "ABORT:   $msg.\n";
-    print STDERR "ABORT:\n";
+    print STDERR "ABORT:   $msg.\n"     if (defined($msg));
+    print STDERR "ABORT:\n"             if (defined($msg));
 
-    if (defined($log)) {
+    if (defined($log) && -e $log) {
         my  $df = diskSpace($log);
 
         print STDERR "ABORT: Disk space available:  $df GB\n";

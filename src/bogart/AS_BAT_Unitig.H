@@ -44,10 +44,14 @@
 #include "stddev.H"
 
 #include <vector>
+#include <set>
 #include <algorithm>
 
-class BestEdgeOverlap;
+using namespace std;
 
+
+class BestEdgeOverlap;
+class optPos;
 
 
 class SeqInterval {
@@ -88,7 +92,43 @@ public:
 
 
 
+//  True if A is contained in B.
+inline
+bool
+isContained(int32 Abgn, int32 Aend,
+            int32 Bbgn, int32 Bend) {
+  assert(Abgn < Aend);
+  assert(Bbgn < Bend);
+  return((Bbgn <= Abgn) &&
+         (Aend <= Bend));
+}
 
+inline
+bool
+isContained(SeqInterval &A, SeqInterval &B) {
+  return((B.min() <= A.min()) &&
+         (A.max() <= B.max()));
+}
+
+
+
+//  True if the A and B intervals overlap
+inline
+bool
+isOverlapping(int32 Abgn, int32 Aend,
+              int32 Bbgn, int32 Bend) {
+  assert(Abgn < Aend);
+  assert(Bbgn < Bend);
+  return((Abgn < Bend) &&
+         (Bbgn < Aend));
+}
+
+inline
+bool
+isOverlapping(SeqInterval &A, SeqInterval &B) {
+  return((A.min() < B.max()) &&
+         (B.min() < A.max()));
+}
 
 
 
@@ -132,8 +172,6 @@ public:
 
 
 
-
-
 class Unitig {
 private:
   Unitig(TigVector *v) {
@@ -142,7 +180,6 @@ private:
     _id            = 0;
 
     _isUnassembled = false;
-    _isBubble      = false;
     _isRepeat      = false;
     _isCircular    = false;
   };
@@ -162,17 +199,31 @@ public:
   //void   bubbleSortLastRead(void);
   void reverseComplement(bool doSort=true);
 
+  //  Ensure that the children are sorted by begin position,
+  //  and that unitigs start at position zero.
   void cleanUp(void);
 
-  // getNumRandomRead() is a placeholder, random reads should not
-  // contain guides, or other reads that are not randomly sampled
-  // across the whole genome.
+  //  Recompute bgn/end positions using all overlaps.
+  void optimize_initPlace(uint32        pp,
+                          optPos       *op,
+                          optPos       *np,
+                          bool          firstPass,
+                          set<uint32>  &failed,
+                          bool          beVerbose);
+  void optimize_recompute(uint32        ii,
+                          optPos       *op,
+                          optPos       *np,
+                          bool          beVerbose);
+  void optimize_expand(optPos       *op);
+  void optimize_setPositions(optPos       *op,
+                             bool          beVerbose);
+  void optimize(const char *prefix, const char *label);
 
-  uint32 id(void)                 { return(_id); };      //  ID internal to bogart
+
+  uint32 id(void)                 { return(_id); };
 
   int32  getLength(void)          { return(_length);       };
   uint32 getNumReads(void)        { return(ufpath.size()); };
-  uint32 getNumRandomReads(void)  { return(getNumReads()); };
 
   //  Place 'read' using an edge to some read in this tig.  The edge is from 'read3p' end.
   //
@@ -190,21 +241,29 @@ public:
     epValue(uint32 b, uint32 e) {
       bgn    = b;
       end    = e;
+      mean   = 0;
+      stddev = 0;
+    };
+
+    epValue(uint32 b, uint32 e, float m, float s) {
+      bgn    = b;
+      end    = e;
+      mean   = m;
+      stddev = s;
     };
 
     double    max(double deviations) {
-      return(dev.mean() + deviations * dev.stddev());
+      return(mean + deviations * stddev);
     };
 
     bool operator<(const epValue &that) const { return(bgn < that.bgn); };
     bool operator<(const uint32 &that)  const { return(bgn < that);     };
 
-
-
     uint32          bgn;
     uint32          end;
 
-    stdDev<float>   dev;
+    float           mean;
+    float           stddev;
   };
 
   static size_t epValueSize(void) { return(sizeof(epValue)); };
@@ -275,21 +334,11 @@ private:
   uint32            _id;
 
 public:
-  //  Classification.  The output is in three files: 'unassembled', 'bubbles', 'contigs' (defined as
-  //  not unassembled and not bubble).
+  //  Classification.
 
-  uint32            _isUnassembled;  //  Is a single read or a pseudo singleton
-  uint32            _isBubble;       //  Annotation: from a failed bubble pop
-  uint32            _isRepeat;       //  Annotation: from an identified repeat region
-  uint32            _isCircular;     //  Annotation: has overlap to self
-
-  char   type(void) {
-    if (_isUnassembled)  return('U');
-    if (_isBubble)       return('B');
-    if (_isRepeat)       return('R');
-    if (_isCircular)     return('C');
-    return('N');
-  }
+  bool              _isUnassembled;  //  Is a single read or a pseudo singleton.
+  bool              _isRepeat;       //  Is from an identified repeat region.
+  bool              _isCircular;     //  Is (probably) a circular tig.
 };
 
 

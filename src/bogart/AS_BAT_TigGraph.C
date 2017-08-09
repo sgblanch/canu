@@ -130,11 +130,11 @@ emitEdges(TigVector      &tigs,
     if (((rdA->isForward() == true) && (placements[pp].covered.bgn > 0)) ||
         ((rdA->isReverse() == true) && (placements[pp].covered.end < rdAlen))) {
 #ifdef SHOW_EDGES
-      writeLog("emitEdges()-- edge --- - tig %6u read %8u %8u-%-8u placed bases %8u-%-8u in tig %6u %8u-%-8u - INCOMPLETELY PLACED outside\n",
+      writeLog("emitEdges()-- edge --- - tig %6u read %8u %8u-%-8u len %6u placed bases %8u-%-8u in tig %6u %8u-%-8u %9u - INCOMPLETELY PLACED outside\n",
                tgA->id(),
-               rdA->ident, rdA->position.bgn, rdA->position.end,
+               rdA->ident, rdA->position.bgn, rdA->position.end, rdAlen,
                placements[pp].covered.bgn, placements[pp].covered.end,
-               tgBid, bgn, end);
+               tgBid, bgn, end, tgBlen);
 #endif
       continue;
     }
@@ -145,9 +145,9 @@ emitEdges(TigVector      &tigs,
     if (((rdA->isForward() == true) && (placements[pp].covered.end < rdAlen) && (bgn > 100) && (end + 100 < tgBlen)) ||
         ((rdA->isReverse() == true) && (placements[pp].covered.bgn > 0)      && (bgn > 100) && (end + 100 < tgBlen))) {
 #ifdef SHOW_EDGES
-      writeLog("emitEdges()-- edge --- - tig %6u read %8u %8u-%-8u placed bases %8u-%-8u in tig %6u %8u-%-8u - INCOMPLETELY PLACED inside\n",
+      writeLog("emitEdges()-- edge --- - tig %6u read %8u %8u-%-8u len %6u placed bases %8u-%-8u in tig %6u %8u-%-8u %9u - INCOMPLETELY PLACED inside\n",
                tgA->id(),
-               rdA->ident, rdA->position.bgn, rdA->position.end,
+               rdA->ident, rdA->position.bgn, rdA->position.end, rdAlen,
                placements[pp].covered.bgn, placements[pp].covered.end,
                tgBid, bgn, end, tgBlen);
 #endif
@@ -155,12 +155,13 @@ emitEdges(TigVector      &tigs,
     }
 
 #ifdef SHOW_EDGES
-    writeLog("emitEdges()-- edge %3u - tig %6u read %8u %8u-%-8u placed bases %8u-%-8u in tig %6u %8u-%-8u quality %f\n",
+    writeLog("emitEdges()-- edge %3u - tig %6u read %8u %8u-%-8u placed bases %8u-%-8u in tig %6u %8u-%-8u %s quality %f\n",
              edges.size(),
              tgA->id(),
              rdA->ident, rdA->position.bgn, rdA->position.end,
              placements[pp].covered.bgn, placements[pp].covered.end,
              tgBid, bgn, end,
+             placements[pp].verified.isForward() ? "->" : "<-",
              (double)placements[pp].errors / placements[pp].aligned);
 #endif
 
@@ -174,11 +175,9 @@ emitEdges(TigVector      &tigs,
     //        <---  alignment on second tig  -  so if not the same, the second tig needs to be
     //    ------------------->               -  flipped to make the alignment work
 
-    bool fwd = false;
+    bool fwd = (rdA->isForward() == placements[pp].verified.isForward());
 
-    if (((rdA->isForward() == true)  && (placements[pp].verified.isForward() == true)) ||
-        ((rdA->isForward() == false) && (placements[pp].verified.isForward() == false)))
-      fwd = true;
+    //  And save the placement.
 
     edges.push_back(grEdge(tgBid, bgn, end, fwd));
   }
@@ -224,8 +223,10 @@ emitEdges(TigVector      &tigs,
           (bgn       > 100) &&
           (end + 100 < tgBlen)) {
 #ifdef SHOW_EDGES_UNPLACED
-        writeLog("emitEdges()-- read %5u incomplete placement covering %5u-%-5u in at %5u-%-5u in tig %4u\n",
-                 rdA->ident, placements[pp].covered.bgn, placements[pp].covered.end, bgn, end, tgBid);
+        writeLog("emitEdges()-- read %5u incomplete placement covering %5u-%-5u at %5u-%-5u %s in tig %4u\n",
+                 rdA->ident,
+                 placements[pp].covered.bgn, placements[pp].covered.end,
+                 bgn, end, placements[pp].verified.isForward() ? "->" : "<-", tgBid);
 #endif
         continue;
       }
@@ -245,46 +246,58 @@ emitEdges(TigVector      &tigs,
         //  tgA against CAB in the target tig.  If not, we'll need to keep count of which direction
         //  we extend things in.
 
-
         //  Fail if most of the extension is to the wrong side.  We always move to higher
         //  coordinates on tgA.  If tgB is forward, it should move to higher coordinates too.
+        //
+        //  tgA           ---------------------------------------------
+        //  rdA           -------------->
+        //                     <-------------------
+        //                            ---------------------
+        //
+        //  tgB    -----------------------------------------------------
+        //                [----edges----]
+        //                     [----read-----]
+        //
+        //  To make it more complicated, a contained read should do nothing, so we can't just
+        //  insist the end coordinate gets bigger.  We must make sure that the bgn coordinate
+        //  doesn't get (significantly) smaller.
 
-        int32  nbgn = min(edges[ee].bgn, bgn);
-        int32  nend = max(edges[ee].end, end);
+        int32  nbgn = min(edges[ee].bgn, bgn);    //   edges[] is the current region aligned
+        int32  nend = max(edges[ee].end, end);    //   bgn,end is where the new read aligned
 
-        if ((edges[ee].fwd == true) &&
-            (bgn - nbgn > nend - end)) {  //  If we decrease bgn more than we increased end, fail
+        //  If tgB is forward, fail if the read aligned to the left (lower) of the current region.
+
+        if ((edges[ee].fwd == true) && (bgn < edges[ee].bgn) && (end < edges[ee].end)) {
 #ifdef SHOW_EDGES_UNPLACED
-        writeLog("emitEdges()-- edge %3u - extend from %5u-%-5u to %5u-%-5u -- placed read %5u at %5u-%-5u in tig %4u - wrong direction\n",
-                 ee,
-                 edges[ee].bgn, edges[ee].end,
-                 nbgn, nend,
-                 rdA->ident, bgn, end, tgBid);
+          writeLog("emitEdges()-- edge %3u - extend from %5u-%-5u to %5u-%-5u -- placed read %5u at %5u-%-5u %s in tig %4u - wrong direction (fwd)\n",
+                   ee,
+                   edges[ee].bgn, edges[ee].end,
+                   nbgn, nend,
+                   rdA->ident, bgn, end, placements[pp].verified.isForward() ? "->" : "<-", tgBid);
 #endif
           continue;
         }
 
-        //  The reverse case is a bit tricky since we're tracking min/max posiiton on tgB.
-        //  When we extend on tgA, we expect the bgn to decrease on tgB and the end to stay the same.
+        //  If tgB is reverse, fail if the read aligned to the left (higher) of the current region.
 
-        if ((edges[ee].fwd == false) &&
-            (nend - end > bgn - nbgn)) {  //  If we increase end more than we decreased bgn, fail
+        if ((edges[ee].fwd == false) && (end > edges[ee].end) && (bgn > edges[ee].bgn)) {
 #ifdef SHOW_EDGES_UNPLACED
-          writeLog("emitEdges()-- edge %3u - extend from %5u-%-5u to %5u-%-5u -- placed read %5u at %5u-%-5u in tig %4u - wrong direction\n",
+          writeLog("emitEdges()-- edge %3u - extend from %5u-%-5u to %5u-%-5u -- placed read %5u at %5u-%-5u %s in tig %4u - wrong direction (rev)\n",
                    ee,
                    edges[ee].bgn, edges[ee].end,
                    nbgn, nend,
-                   rdA->ident, bgn, end, tgBid);
+                   rdA->ident, bgn, end, placements[pp].verified.isForward() ? "->" : "<-", tgBid);
 #endif
           continue;
         }
 
 #ifdef SHOW_EDGES
-        writeLog("emitEdges()-- edge %3u - extend from %5u-%-5u to %5u-%-5u -- placed read %5u at %5u-%-5u in tig %4u\n",
+        writeLog("emitEdges()-- edge %3u - extend from %5u-%-5u to %5u-%-5u -- placed read %5u at %5u-%-5u %s in tig %4u\n",
                  ee,
                  edges[ee].bgn, edges[ee].end,
                  nbgn, nend,
-                 rdA->ident, bgn, end, tgBid);
+                 rdA->ident, bgn, end, placements[pp].verified.isForward() ? "->" : "<-",
+                 tgBid);
 #endif
 
         edges[ee].bgn      = nbgn;
@@ -321,6 +334,9 @@ emitEdges(TigVector      &tigs,
                 tgA->id(),       tgAflipped ? '-' : '+',
                 edges[ee].end - edges[ee].bgn,
                 (sameContig == true) ? "\tcv:A:T" : "\tcv:A:F");
+
+        tgA->_isCircular  = (tgA->id() == edges[ee].tigID);
+
         edges[ee].deleted = true;
       }
 
@@ -337,6 +353,9 @@ emitEdges(TigVector      &tigs,
                 tgA->id(),       tgAflipped ? '-' : '+',
                 edges[ee].end - edges[ee].bgn,
                 (sameContig == true) ? "\tcv:A:T" : "\tcv:A:F");
+
+        tgA->_isCircular = (tgA->id() == edges[ee].tigID);
+
         edges[ee].deleted = true;
       }
     }
@@ -440,7 +459,8 @@ reportTigGraph(TigVector &tigs,
   //  make a disconnected unitig and need to split it again.
 
   for (uint32 ti=1; ti<tigs.size(); ti++)
-    if ((tigs[ti] != NULL) && (tigs[ti]->_isUnassembled == false))
+    if ((tigs[ti] != NULL) &&
+        (tigs[ti]->_isUnassembled == false))
       fprintf(BEG, "S\ttig%08u\t*\tLN:i:%u\n", ti, tigs[ti]->getLength());
 
   //  Run through all the tigs, emitting edges for the first and last read.
@@ -448,7 +468,8 @@ reportTigGraph(TigVector &tigs,
   for (uint32 ti=1; ti<tigs.size(); ti++) {
     Unitig  *tgA = tigs[ti];
 
-    if ((tgA == NULL) || (tgA->_isUnassembled == true))
+    if ((tgA == NULL) ||
+        (tgA->_isUnassembled == true))
       continue;
 
     //if (ti == 4)

@@ -31,6 +31,8 @@
 
 #include "AS_BAT_Unitig.H"
 
+#include "AS_BAT_MarkRepeatReads.H"
+
 #include "intervalList.H"
 #include "stddev.H"
 
@@ -79,6 +81,7 @@ public:
 };
 
 
+
 bool
 olapDatByEviRid(const olapDat &A, const olapDat &B) {
   if (A.eviRid == B.eviRid)
@@ -93,9 +96,9 @@ olapDatByEviRid(const olapDat &A, const olapDat &B) {
 class breakPointCoords {
 public:
   breakPointCoords(int32 bgn, int32 end, bool rpt=false) {
-    _bgn      = bgn;
-    _end      = end;
-    _isRepeat = rpt;
+    _bgn = bgn;
+    _end = end;
+    _rpt = rpt;
   };
   ~breakPointCoords() {
   };
@@ -106,7 +109,7 @@ public:
 
   int32   _bgn;
   int32   _end;
-  bool    _isRepeat;
+  bool    _rpt;
 };
 
 
@@ -207,7 +210,7 @@ splitTig(TigVector                &tigs,
     for (uint32 ii=0; ii<BP.size(); ii++) {
       int32   rgnbgn = BP[ii]._bgn;
       int32   rgnend = BP[ii]._end;
-      bool    repeat = BP[ii]._isRepeat;
+      bool    repeat = BP[ii]._rpt;
 
       //  For repeats, the read must be contained fully.
 
@@ -229,7 +232,7 @@ splitTig(TigVector                &tigs,
     if (rid == UINT32_MAX) {
       fprintf(stderr, "Failed to place read %u at %d-%d\n", frg.ident, frgbgn, frgend);
       for (uint32 ii=0; ii<BP.size(); ii++)
-        fprintf(stderr, "BP[%3u] at %8u-%8u repeat %u\n", ii, BP[ii]._bgn, BP[ii]._end, BP[ii]._isRepeat);
+        fprintf(stderr, "BP[%3u] at %8u-%8u repeat %u\n", ii, BP[ii]._bgn, BP[ii]._end, BP[ii]._rpt);
       flushLog();
     }
     assert(rid != UINT32_MAX);  //  We searched all the BP's, the read had better be placed!
@@ -532,11 +535,18 @@ findConfusedEdges(TigVector            &tigs,
                   Unitig                *tig,
                   intervalList<int32>  &tigMarksR,
                   double                confusedAbsolute,
-                  double                confusedPercent) {
+                  double                confusedPercent,
+                  vector<confusedEdge> &confusedEdges) {
 
   uint32  *isConfused  = new uint32 [tigMarksR.numberOfIntervals()];
 
   memset(isConfused, 0, sizeof(uint32) * tigMarksR.numberOfIntervals());
+
+  //  Examine every read in this tig.  If the read intersects a marked repeat, find the best edge
+  //  that continues the tig in either direction.  If those reads are in the repeat region, scan all
+  //  the overlaps of this read for any that are of comparable length.  If any are found, declare
+  //  this repeat to be potentially confused.  If none are found - for the whole repeat region -
+  //  then we can leave the repeat alone.
 
   for (uint32 fi=0; fi<tig->ufpath.size(); fi++) {
     ufNode     *rdA       = &tig->ufpath[fi];
@@ -547,8 +557,8 @@ findConfusedEdges(TigVector            &tigs,
 
     double      sc        = (rdAhi - rdAlo) / (double)RI->readLength(rdAid);
 
-    if ((OG->isContained(rdAid)  == true) ||
-        (OG->isSuspicious(rdAid) == true))
+    if ((OG->isContained(rdAid)  == true) ||    //  Don't care about contained or suspicious
+        (OG->isSuspicious(rdAid) == true))      //  reads; we'll use the container instead.
       continue;
 
     for (uint32 ri=0; ri<tigMarksR.numberOfIntervals(); ri++) {
@@ -697,11 +707,6 @@ findConfusedEdges(TigVector            &tigs,
             (tigs[tgBid]->ufpath.size() == 1))
           continue;
 
-        //  If the read is in an annotated bubble, skip.
-        if ((tigs[tgBid]->_isBubble == true) &&
-            (tigs[tgBid]->_isRepeat == false))
-          continue;
-
         //  Skip if this overlap is the best we're trying to match.
         if ((rdBid == b5->readId()) ||
             (rdBid == b3->readId()))
@@ -782,7 +787,7 @@ findConfusedEdges(TigVector            &tigs,
 
         //  Potential confusion!
 
-        if (ovl5 == true)
+        if (ovl5 == true) {
           writeLog("tig %7u read %8u pos %7u-%-7u IS confused by 5' edge to read %8u - best edge read %8u len %6u erate %.4f score %8.2f - alt edge len %6u erate %.4f score %8.2f - absdiff %8.2f percdiff %8.4f\n",
                    tig->id(), rdAid, rdAlo, rdAhi,
                    rdBid,
@@ -790,13 +795,19 @@ findConfusedEdges(TigVector            &tigs,
                    len, ovl[oo].erate(), score,
                    ad5, pd5);
 
-        if (ovl3 == true)
+          confusedEdges.push_back(confusedEdge(rdAid, false, rdBid));
+        }
+
+        if (ovl3 == true) {
           writeLog("tig %7u read %8u pos %7u-%-7u IS confused by 3' edge to read %8u - best edge read %8u len %6u erate %.4f score %8.2f - alt edge len %6u erate %.4f score %8.2f - absdiff %8.2f percdiff %8.4f\n",
                    tig->id(), rdAid, rdAlo, rdAhi,
                    rdBid,
                    b3->readId(), len3, b3->erate(), score3,
                    len, ovl[oo].erate(), score,
                    ad3, pd3);
+
+          confusedEdges.push_back(confusedEdge(rdAid, true, rdBid));
+        }
 
         isConfused[ri]++;
       }
@@ -813,9 +824,10 @@ discardUnambiguousRepeats(TigVector            &tigs,
                           Unitig                *tig,
                           intervalList<int32>  &tigMarksR,
                           double                confusedAbsolute,
-                          double                confusedPercent) {
+                          double                confusedPercent,
+                          vector<confusedEdge> &confusedEdges) {
 
-  uint32  *isConfused = findConfusedEdges(tigs, tig, tigMarksR, confusedAbsolute, confusedPercent);
+  uint32  *isConfused = findConfusedEdges(tigs, tig, tigMarksR, confusedAbsolute, confusedPercent, confusedEdges);
 
   //  Scan all the regions, and delete any that have no confusion.
 
@@ -896,7 +908,7 @@ reportTigsCreated(Unitig                    *tig,
   for (uint32 ii=0; ii<BP.size(); ii++) {
     int32   rgnbgn = BP[ii]._bgn;
     int32   rgnend = BP[ii]._end;
-    bool    repeat = BP[ii]._isRepeat;
+    bool    repeat = BP[ii]._rpt;
 
     if      (nRepeat[ii] + nUnique[ii] == 0)
       writeLog("For tig %5u %s region %8d %8d - %6u/%6u repeat/unique reads - no new unitig created.\n",
@@ -917,11 +929,12 @@ reportTigsCreated(Unitig                    *tig,
 
 
 void
-markRepeatReads(AssemblyGraph  *AG,
-                TigVector      &tigs,
-                double          deviationRepeat,
-                uint32          confusedAbsolute,
-                double          confusedPercent) {
+markRepeatReads(AssemblyGraph         *AG,
+                TigVector             &tigs,
+                double                 deviationRepeat,
+                uint32                 confusedAbsolute,
+                double                 confusedPercent,
+                vector<confusedEdge>  &confusedEdges) {
   uint32  tiLimit = tigs.size();
   uint32  numThreads = omp_get_max_threads();
   uint32  blockSize = (tiLimit < 100000 * numThreads) ? numThreads : tiLimit / 99999;
@@ -937,10 +950,9 @@ markRepeatReads(AssemblyGraph  *AG,
   for (uint32 ti=0; ti<tiLimit; ti++) {
     Unitig  *tig = tigs[ti];
 
-    if (tig == NULL)
-      continue;
-
-    if (tig->ufpath.size() == 1)
+    if ((tig == NULL) ||                  //  Deleted, nothing to do.
+        (tig->ufpath.size() == 1) ||      //  Singleton, nothing to do.
+        (tig->_isUnassembled == true))    //  Unassembled, don't care.
       continue;
 
     writeLog("Annotating repeats in reads for tig %u/%u.\n", ti, tiLimit);
@@ -999,7 +1011,7 @@ markRepeatReads(AssemblyGraph  *AG,
 
     writeLog("search for confused edges:\n");
 
-    discardUnambiguousRepeats(tigs, tig, tigMarksR, confusedAbsolute, confusedPercent);
+    discardUnambiguousRepeats(tigs, tig, tigMarksR, confusedAbsolute, confusedPercent, confusedEdges);
 
 
     //  Merge adjacent repeats.
@@ -1054,7 +1066,7 @@ markRepeatReads(AssemblyGraph  *AG,
     for (uint32 ii=0; ii<BP.size(); ii++)
       writeLog("  %8d %8d %s (length %d)\n",
                BP[ii]._bgn, BP[ii]._end,
-               BP[ii]._isRepeat ? "repeat" : "unique",
+               BP[ii]._rpt ? "repeat" : "unique",
                BP[ii]._end - BP[ii]._bgn);
 
     //  Scan the reads, counting the number of reads that would be placed in each new tig.  This is done
@@ -1092,4 +1104,17 @@ markRepeatReads(AssemblyGraph  *AG,
       delete tig;
     }
   }
+
+#if 0
+  FILE *F = fopen("junk.confusedEdges", "w");
+  for (uint32 ii=0; ii<confusedEdges.size(); ii++) {
+    fprintf(F, "%7u %c' from read %7u\n",
+            confusedEdges[ii].aid,
+            confusedEdges[ii].a3p ? '3' : '5',
+            confusedEdges[ii].bid);
+  }
+  fclose(F);
+#endif
+
+  writeStatus("markRepeatReads()-- Found %u confused edges.\n", confusedEdges.size());
 }

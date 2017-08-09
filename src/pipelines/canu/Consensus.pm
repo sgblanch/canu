@@ -144,9 +144,7 @@ sub cleanupPartitions ($$) {
 
     print STDERR "-- Partitioned gkpStore is older than tigs, rebuild partitioning (gkpStore $gkpTime days old; ctgStore $tigTime days old).\n";
 
-    if (runCommandSilently("unitigging", "rm -rf ./$asm.${tag}Store/partitionedReads.gkpStore", 1)) {
-        caExit("failed to remove old partitions (unitigging/$asm.${tag}Store/partitionedReads.gkpStore/partitions), can't continue until these are removed", undef);
-    }
+    remove_tree("unitigging/$asm.${tag}Store/partitionedReads.gkpStore");
 }
 
 
@@ -328,19 +326,21 @@ sub consensusCheck ($) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " consensus jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to generate consensus.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Consensus jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Consensus jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -375,12 +375,19 @@ sub consensusCheck ($) {
 
 
 
-sub purgeFiles ($$$$$) {
+sub purgeFiles ($$$$$$) {
+    my $asm     = shift @_;
     my $tag     = shift @_;
     my $Ncns    = shift @_;
     my $Nfastq  = shift @_;
     my $Nlayout = shift @_;
     my $Nlog    = shift @_;
+
+    remove_tree("unitigging/$asm.ctgStore/partitionedReads.gkpStore");  #  The partitioned gkpStores
+    remove_tree("unitigging/$asm.utgStore/partitionedReads.gkpStore");  #  are useless now.  Bye bye!
+
+    unlink "unitigging/$asm.ctgStore/partitionedReads.log";
+    unlink "unitigging/$asm.utgStore/partitionedReads.log";
 
     my $path = "unitigging/5-consensus";
 
@@ -505,8 +512,8 @@ sub consensusLoad ($) {
         my $Nlayout = 0;
         my $Nlog    = 0;
 
-        ($Ncns, $Nfastq, $Nlayout, $Nlog) = purgeFiles("ctgcns", $Ncns, $Nfastq, $Nlayout, $Nlog);
-        ($Ncns, $Nfastq, $Nlayout, $Nlog) = purgeFiles("utgcns", $Ncns, $Nfastq, $Nlayout, $Nlog);
+        ($Ncns, $Nfastq, $Nlayout, $Nlog) = purgeFiles($asm, "ctgcns", $Ncns, $Nfastq, $Nlayout, $Nlog);
+        ($Ncns, $Nfastq, $Nlayout, $Nlog) = purgeFiles($asm, "utgcns", $Ncns, $Nfastq, $Nlayout, $Nlog);
 
         print STDERR "-- Purged $Ncns .cns outputs.\n"        if ($Ncns > 0);
         print STDERR "-- Purged $Nfastq .fastq outputs.\n"    if ($Nfastq > 0);
@@ -582,8 +589,7 @@ sub alignGFA ($) {
     goto allDone   if (skipStage($asm, "alignGFA") == 1);
     goto allDone   if (fileExists("unitigging/4-unitigger/$asm.contigs.aligned.gfa") &&
                        fileExists("unitigging/4-unitigger/$asm.unitigs.aligned.gfa") &&
-                       fileExists("unitigging/4-unitigger/$asm.unitigs.aligned.bed") &&
-                       fileExists("unitigging/4-unitigger/$asm.unitigs.aligned.bed.gfa"));
+                       fileExists("unitigging/4-unitigger/$asm.unitigs.aligned.bed"));
 
     #  If a large genome, run this on the grid, else, run in the canu process itself.
     my $runGrid = (getGlobal("genomeSize") >= 40000000);
@@ -652,23 +658,9 @@ sub alignGFA ($) {
         print F "\n";
         print F "\n";
 
-        print F "if [ ! -e ./$asm.unitigs.aligned.bed.gfa ] ; then\n";
-        print F "  \$bin/alignGFA -bed \\\n";
-        print F "    -T ../$asm.utgStore 2 \\\n";
-        print F "    -i ./$asm.unitigs.bed \\\n";
-        print F "    -o ./$asm.unitigs.aligned.bed.gfa \\\n";
-        print F "    -t " . getGlobal("gfaThreads") . " \\\n";
-        print F "  > ./$asm.unitigs.aligned.bed.gfa.err 2>&1";
-        print F "\n";
-        print F stashFileShellCode("$path", "$asm.unitigs.aligned.bed.gfa", "  ");
-        print F "fi\n";
-        print F "\n";
-        print F "\n";
-
         print F "if [ -e ./$asm.unitigs.aligned.gfa -a \\\n";
         print F "     -e ./$asm.contigs.aligned.gfa -a \\\n";
-        print F "     -e ./$asm.unitigs.aligned.bed -a \\\n";
-        print F "     -e ./$asm.unitigs.aligned.bed.gfa ] ; then\n";
+        print F "     -e ./$asm.unitigs.aligned.bed ] ; then\n";
         print F "  echo GFA alignments updated.\n";
         print F "  exit 0\n";
         print F "else\n";
@@ -685,18 +677,19 @@ sub alignGFA ($) {
     #  shows how to process multiple jobs.  This only checks for the existence of the final outputs.
     #  (meryl and unitig are the same)
 
-    #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-    if ($attempt > 1) {
-        print STDERR "--\n";
-        print STDERR "-- GFA alignment failed.\n";
-        print STDERR "--\n";
-    }
-
     #  If too many attempts, give up.
 
-    if ($attempt > getGlobal("canuIterationMax")) {
-        caExit("failed to align GFA links.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+    if ($attempt >= getGlobal("canuIterationMax")) {
+        print STDERR "--\n";
+        print STDERR "-- Graph alignment jobs failed, tried $attempt times, giving up.\n";
+        print STDERR "--\n";
+        caExit(undef, undef);
+    }
+
+    if ($attempt > 0) {
+        print STDERR "--\n";
+        print STDERR "-- Graph alignment jobs failed, retry.\n";
+        print STDERR "--\n";
     }
 
     #  Otherwise, run some jobs.

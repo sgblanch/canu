@@ -272,6 +272,21 @@ AS_UTL_mkdir(const char *dirname) {
 
 
 
+//  Remove a directory, or do nothing if the file doesn't exist.
+void
+AS_UTL_rmdir(const char *dirname) {
+
+  if (AS_UTL_fileExists(dirname, FALSE, FALSE) == false)
+    return;
+
+  errno = 0;
+  rmdir(dirname);
+  if (errno)
+    fprintf(stderr, "AS_UTL_rmdir()--  Failed to remove directory '%s': %s\n", dirname, strerror(errno)), exit(1);
+}
+
+
+
 void
 AS_UTL_symlink(const char *pathToFile, const char *pathToLink) {
 
@@ -386,7 +401,7 @@ AS_UTL_sizeOfFile(const char *path) {
   if        (strcasecmp(path+strlen(path)-3, ".gz") == 0) {
     char   cmd[FILENAME_MAX], *p = cmd;
 
-    snprintf(cmd, FILENAME_MAX, "gzip -l %s", path);
+    snprintf(cmd, FILENAME_MAX, "gzip -l '%s'", path);
 
     FILE *F = popen(cmd, "r");
     fgets(cmd, FILENAME_MAX, F);    //   compressed uncompressed  ratio uncompressed_name
@@ -544,19 +559,19 @@ compressedFileReader::compressedFileReader(const char *filename) {
 
   switch (ft) {
     case cftGZ:
-      snprintf(cmd, FILENAME_MAX, "gzip -dc %s", filename);
+      snprintf(cmd, FILENAME_MAX, "gzip -dc '%s'", filename);
       _file = popen(cmd, "r");
       _pipe = true;
       break;
 
     case cftBZ2:
-      snprintf(cmd, FILENAME_MAX, "bzip2 -dc %s", filename);
+      snprintf(cmd, FILENAME_MAX, "bzip2 -dc '%s'", filename);
       _file = popen(cmd, "r");
       _pipe = true;
       break;
 
     case cftXZ:
-      snprintf(cmd, FILENAME_MAX, "xz -dc %s", filename);
+      snprintf(cmd, FILENAME_MAX, "xz -dc '%s'", filename);
       _file = popen(cmd, "r");
       _pipe = true;
 
@@ -612,19 +627,19 @@ compressedFileWriter::compressedFileWriter(const char *filename, int32 level) {
 
   switch (ft) {
     case cftGZ:
-      snprintf(cmd, FILENAME_MAX, "gzip -%dc > %s", level, filename);
+      snprintf(cmd, FILENAME_MAX, "gzip -%dc > '%s'", level, filename);
       _file = popen(cmd, "w");
       _pipe = true;
       break;
 
     case cftBZ2:
-      snprintf(cmd, FILENAME_MAX, "bzip2 -%dc > %s", level, filename);
+      snprintf(cmd, FILENAME_MAX, "bzip2 -%dc > '%s'", level, filename);
       _file = popen(cmd, "w");
       _pipe = true;
       break;
 
     case cftXZ:
-      snprintf(cmd, FILENAME_MAX, "xz -%dc > %s", level, filename);
+      snprintf(cmd, FILENAME_MAX, "xz -%dc > '%s'", level, filename);
       _file = popen(cmd, "w");
       _pipe = true;
       break;

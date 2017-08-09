@@ -153,7 +153,6 @@ public:
 
 
 
-
 inline
 bool
 BAToverlap_sortByEvalue(BAToverlap const &a, BAToverlap const &b) {
@@ -162,27 +161,94 @@ BAToverlap_sortByEvalue(BAToverlap const &a, BAToverlap const &b) {
 
 
 
-class OverlapCacheThreadData {
+class OverlapStorage {
 public:
-  OverlapCacheThreadData() {
-    _batMax  = 1 * 1024 * 1024;  //  At 8B each, this is 8MB
-    _bat     = new BAToverlap [_batMax];
+  OverlapStorage(uint64 nOvl) {
+    _osAllocLen = 1024 * 1024 * 1024 / sizeof(BAToverlap);  //  1GB worth of overlaps
+    _osLen      = 0;                            //  osMax is cheap and we overallocate it.
+    _osPos      = 0;                            //  If allocLen is small, we can end up with
+    _osMax      = 2 * nOvl / _osAllocLen + 2;   //  more blocks than expected, when overlaps
+    _os         = new BAToverlap * [_osMax];    //  don't fit in the remaining space.
+
+    memset(_os, 0, sizeof(BAToverlap *) * _osMax);
+
+    _os[0]      = new BAToverlap [_osAllocLen];   //  Alloc first block, keeps getOverlapStorage() simple
   };
 
-  ~OverlapCacheThreadData() {
-    delete [] _bat;
+  OverlapStorage(OverlapStorage *original) {
+    _osAllocLen = original->_osAllocLen;
+    _osLen      = 0;
+    _osPos      = 0;
+    _osMax      = original->_osMax;
+    _os         = NULL;
   };
 
-  uint32                  _batMax;   //  For returning overlaps
-  BAToverlap             *_bat;      //
+  ~OverlapStorage() {
+    if (_os == NULL)
+      return;
+
+    for (uint32 ii=0; ii<_osMax; ii++)
+      delete [] _os[ii];
+    delete [] _os;
+  }
+
+
+  void          reset(void) {
+    _osLen = 0;
+    _osPos = 0;
+  };
+
+
+  BAToverlap   *get(void) {
+    if (_os == NULL)
+      return(NULL);
+    return(_os[_osLen] + _osPos);
+  };
+
+
+  BAToverlap   *get(uint32 nOlaps) {
+    if (_osPos + nOlaps > _osAllocLen) {           //  If we don't fit in the current allocation,
+      _osPos = 0;                                  //  move to the next one.
+      _osLen++;
+    }
+
+    _osPos += nOlaps;                              //  Reserve space for these overlaps.
+
+    assert(_osLen < _osMax);
+
+    if (_os == NULL)                               //  If we're not allowed to allocate,
+      return(NULL);                                //  return nothing.
+
+    if (_os[_osLen] == NULL)                       //  Otherwise, make sure we have space and return
+      _os[_osLen] = new BAToverlap [_osAllocLen];  //  that space.
+
+    return(_os[_osLen] + _osPos - nOlaps);
+  };
+
+
+  void          advance(OverlapStorage *that) {
+    if (((that->_osLen <  _osLen)) ||                            //  That segment before mine, or
+        ((that->_osLen == _osLen) && (that->_osPos <= _osPos)))  //  that segment equal and position before mine
+      return;                                                    //  So no need to modify
+
+    _osLen = that->_osLen;
+    _osPos = that->_osPos;
+  };
+
+
+private:
+  uint32                  _osAllocLen;   //  Size of each allocation
+  uint32                  _osLen;        //  Current allocation being used
+  uint32                  _osPos;        //  Position in current allocation; next free overlap
+  uint32                  _osMax;        //  Number of allocations we can make
+  BAToverlap            **_os;           //  Allocations
 };
+
 
 
 class OverlapCache {
 public:
-  OverlapCache(gkStore *gkp,
-               ovStore *ovlStoreUniq,
-               ovStore *ovlStoreRept,
+  OverlapCache(const char *ovlStorePath,
                const char *prefix,
                double maxErate,
                uint32 minOverlap,
@@ -192,14 +258,11 @@ public:
   ~OverlapCache();
 
 private:
-  uint32       findHighestOverlapCount(void);
-  void         allocateLoadingSpace(void);
-
   uint32       filterOverlaps(uint32 maxOVSerate, uint32 minOverlap, uint32 no);
   uint32       filterDuplicates(uint32 &no);
 
-  void         computeOverlapLimit(void);
-  void         loadOverlaps(bool doSave);
+  void         computeOverlapLimit(ovStore *ovlStore, uint64 genomeSize);
+  void         loadOverlaps(ovStore *ovlStore, bool doSave);
   void         symmetrizeOverlaps(void);
 
 public:
@@ -215,12 +278,22 @@ private:
 private:
   const char             *_prefix;
 
-  uint64                  _memLimit;
-  uint64                  _memUsed;
+  uint64                  _memLimit;       //  Expected max size of bogart
+  uint64                  _memReserved;    //  Memory to reserve for processing
+  uint64                  _memAvail;       //  Memory available for storing overlaps
+  uint64                  _memStore;       //  Memory used to support overlaps
+  uint64                  _memOlaps;       //  Memory used to store overlaps
 
-  BAToverlap            **_overlaps;
   uint32                 *_overlapLen;
   uint32                 *_overlapMax;
+  BAToverlap            **_overlaps;
+
+  //  Instead of allocating space for overlaps per read (which has some visible but unknown size
+  //  cost with each allocation), or in a single massive allocation (which we can't resize), we
+  //  allocate overlaps in large blocks then set pointers into each block where overlaps for each
+  //  read start.  This is managed by OverlapStorage.
+
+  OverlapStorage         *_overlapStorage;
 
   uint32                  _maxEvalue;  //  Don't load overlaps with high error
   uint32                  _minOverlap; //  Don't load overlaps that are short
@@ -235,14 +308,7 @@ private:
   uint64                 *_ovsSco;     //  For scoring overlaps during the load
   uint64                 *_ovsTmp;     //  For picking out a score threshold
 
-  uint64                  _threadMax;
-  OverlapCacheThreadData *_thread;
-
   uint64                  _genomeSize;
-
-  gkStore                *_gkp;
-  ovStore                *_ovlStoreUniq;  //  Pointers to input stores
-  ovStore                *_ovlStoreRept;
 };
 
 

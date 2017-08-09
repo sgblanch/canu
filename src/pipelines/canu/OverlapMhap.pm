@@ -623,7 +623,7 @@ sub mhapPrecomputeCheck ($$$) {
             if (fileExists("$path/blocks/$1.dat")) {
                 push @successJobs, "1-overlapper/blocks/$1.dat\n";
             } else {
-                $failureMessage .= "--   job 1-overlapper/blocks/$1.dat FAILED.\n";
+                $failureMessage .= "--   job $path/blocks/$1.dat FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 
@@ -636,19 +636,21 @@ sub mhapPrecomputeCheck ($$$) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " mhap precompute jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to precompute mhap indices.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Mhap precompute jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Mhap precompute jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -739,7 +741,7 @@ sub mhapCheck ($$$) {
                 push @miscJobs,    "1-overlapper/results/$1.counts\n";
 
             } else {
-                $failureMessage .= "--   job 1-overlapper/results/$1.ovb FAILED.\n";
+                $failureMessage .= "--   job $path/results/$1.ovb FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 
@@ -751,7 +753,7 @@ sub mhapCheck ($$$) {
     #  Also find the queries symlinks so we can remove those.  And the query directories, because
     #  the last directory can be empty, and so we'd never see it at all if only finding files.
 
-    open(F, "find $path/queries -print |");
+    open(F, "cd $base && find 1-overlapper/queries -print |");
     while (<F>) {
         push @mhapJobs, $_;
     }
@@ -761,19 +763,21 @@ sub mhapCheck ($$$) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " mhap jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to compute mhap overlaps.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Mhap overlap jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Mhap overlap jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.

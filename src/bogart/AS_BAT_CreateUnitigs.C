@@ -61,6 +61,13 @@ public:
     return(a < b);
   };
 
+  bool     operator==(breakPointEnd const &that) const {
+    uint64  a =      _tigID;  a <<= 32;  a |=      _pos;  a <<= 1;  a |=      _bgn;  //  Because _tigID is 32-bit
+    uint64  b = that._tigID;  b <<= 32;  b |= that._pos;  b <<= 1;  b |= that._bgn;
+
+    return(a == b);
+  };
+
   uint32  _tigID;
   uint32  _pos;
   bool    _bgn;
@@ -78,9 +85,7 @@ copyTig(TigVector    &tigs,
   Unitig  *newtig = tigs.newUnitig(false);
 
   newtig->_isUnassembled = oldtig->_isUnassembled;
-  newtig->_isBubble      = oldtig->_isBubble;
   newtig->_isRepeat      = oldtig->_isRepeat;
-  newtig->_isCircular    = oldtig->_isCircular;
 
   for (uint32 fi=0; fi<oldtig->ufpath.size(); fi++)
     newtig->addRead(oldtig->ufpath[fi], 0, false);
@@ -101,6 +106,9 @@ splitTig(TigVector                &tigs,
          Unitig                  **newTigs,
          int32                    *lowCoord,
          bool                      doMove) {
+
+  writeLog("\n");
+  writeLog("splitTig()-- processing tig %u\n", tig->id());
 
   //  The first call is with doMove = false.  This call just figures out how many new tigs are
   //  created.  We use nMoved to count if a new tig is made for a break point.
@@ -130,6 +138,8 @@ splitTig(TigVector                &tigs,
     ufNode     &read   = tig->ufpath[fi];
     uint32      lo     = read.position.min();
     uint32      hi     = read.position.max();
+
+    //writeLog("splitTig()-- processing read #%u ident %u pos %u-%u\n", fi, read.ident, lo, hi);
 
     //  Find the intervals the end points of the read fall into.  Suppose we're trying to place
     //  the long read.  It begins in piece 1 and ends in piece 6.
@@ -216,12 +226,13 @@ splitTig(TigVector                &tigs,
     //  Now move the read, or account for moving it.
 
     if (doMove) {
-      //writeLog("splitTig()-- Move read %8u %8u-%-8u to piece %2u tig %6u\n",
-      //         read.ident, read.position.bgn, read.position.end, finBP, newTigs[finBP]->id());
+      writeLog("splitTig()-- Move read %8u %8u-%-8u to piece %2u tig %6u\n",
+               read.ident, read.position.bgn, read.position.end, finBP, newTigs[finBP]->id());
       newTigs[finBP]->addRead(read, -lowCoord[finBP], false);
     }
     else {
-      //writeLog("splitTig()-- Move read %u %u-%u to piece %u (pos=%u)\n", read.ident, read.position.bgn, read.position.end, bp, BP[finBP]._pos);
+      //writeLog("splitTig()-- Move read %u %u-%u to piece %u (pos=%u)\n",
+      //         read.ident, read.position.bgn, read.position.end, finBP, BP[finBP]._pos);
       nMoved[finBP]++;
     }
   }
@@ -243,42 +254,6 @@ splitTig(TigVector                &tigs,
 
 
 
-
-//  True if A is contained in B.
-bool
-isContained(int32 Abgn, int32 Aend,
-            int32 Bbgn, int32 Bend) {
-  assert(Abgn < Aend);
-  assert(Bbgn < Bend);
-  return((Bbgn <= Abgn) &&
-         (Aend <= Bend));
-}
-
-bool
-isContained(SeqInterval &A, SeqInterval &B) {
-  return((B.min() <= A.min()) &&
-         (A.max() <= B.max()));
-}
-
-
-//  True if the A and B intervals overlap
-bool
-isOverlapping(int32 Abgn, int32 Aend,
-              int32 Bbgn, int32 Bend) {
-  assert(Abgn < Aend);
-  assert(Bbgn < Bend);
-  return((Abgn < Bend) &&
-         (Bbgn < Aend));
-}
-
-bool
-isOverlapping(SeqInterval &A, SeqInterval &B) {
-  return((A.min() < B.max()) &&
-         (B.min() < A.max()));
-}
-
-
-
 static
 uint32
 checkReadContained(overlapPlacement &op,
@@ -294,11 +269,13 @@ checkReadContained(overlapPlacement &op,
 
 
 
-//  Decide which read, and which end, we're overlapping.  We know the positions
-//  covered with overlaps ('verified'), and this also tells us the orientation of the read.  is5
-//  can then be used to tell if the invading tig is flopping free to the left or right of this
-//  location.  The break then occurs at the 'verified' coordinate furthest from the start of the
-//  tig.
+//  Decide which read, and which end, we're overlapping.  We know:
+//
+//    verified tells us the positions covered with overlaps and the orietation of the aligned read
+//
+//    isFirst and rdAfwd tell if the invading tig is flopping free to the left
+//    or right of this location
+//
 //                                    break here
 //                                    v
 //    invaded tig     ----------------------------------------------
@@ -317,38 +294,18 @@ checkReadContained(overlapPlacement &op,
 //
 void
 findEnd(overlapPlacement &op,
-        bool              is5,
+        bool              rdAfwd,
+        bool              isFirst,
         bool             &isLow,
         int32            &coord) {
 
-  //  invaded tig     ----------------------
-  //                        |      |
-  //  reads in source       ------->
-  //                       is5    --------  -- so flops to the right
-  //
-  //  invaded tig     ----------------------
-  //                        |      |
-  //  reads in source       <-------
-  //                       !is5  --------   -- so flops to the right   ** this is the picture above **
-  //
-  if (((op.verified.isForward() == true)  && (is5 == true)) ||
-      ((op.verified.isForward() == false) && (is5 == false))) {
+  if (((isFirst == true)  && (rdAfwd == true)  && (op.verified.isForward() == true))  ||
+      ((isFirst == true)  && (rdAfwd == false) && (op.verified.isForward() == false)) ||
+      ((isFirst == false) && (rdAfwd == false) && (op.verified.isForward() == true))  ||  //  rdAfwd is opposite what reality is,
+      ((isFirst == false) && (rdAfwd == true)  && (op.verified.isForward() == false))) {  //  because we've flipped the tig outside here
     isLow = false;
     coord = INT32_MIN;
-  }
-
-  //  invaded tig     ----------------------
-  //                        |      |
-  //  reads in source       ------->
-  //                    --------  !is5      -- so flops to the left
-  //
-  //  invaded tig     ----------------------
-  //                        |      |
-  //  reads in source       <-------
-  //                    --------  is5       -- so flops to the left
-  //
-  if (((op.verified.isForward() == true)  && (is5 == false)) ||
-      ((op.verified.isForward() == false) && (is5 == true))) {
+  } else {
     isLow = true;
     coord = INT32_MAX;
   }
@@ -358,15 +315,21 @@ findEnd(overlapPlacement &op,
 
 
 static
-void
+uint32
 checkRead(Unitig                    *tgA,
           ufNode                    *rdA,
           vector<overlapPlacement>  &rdAplacements,
           TigVector                 &contigs,
-          vector<breakPointEnd>     &breaks,
+          vector<breakPointEnd>     &breakpoints,
           uint32                     minOverlap,
+          uint32                     maxPlacements,
           bool                       isFirst) {
   bool   verbose = true;
+
+  //  To support maxPlacements, we first find all the breaks as we've done forever, then simply
+  //  ignore them if there are too many.
+
+  vector<breakPointEnd>   breaks;
 
   for (uint32 pp=0; pp<rdAplacements.size(); pp++) {
     overlapPlacement  &op = rdAplacements[pp];
@@ -424,15 +387,6 @@ checkRead(Unitig                    *tgA,
         continue;
     }
 
-    //  If a contained edge, we cannot split the other tig; it is correct.
-    //  The overlap from rdA is contained in some other read in tgB.
-
-    if (checkReadContained(op, tgB)) {
-      isContained = true;
-      if (verbose == false)
-        continue;
-    }
-
     //  Sacn all the reads we supposedly overlap, checking for overlaps.  Save the one that is the
     //  lowest (is5 == true) or highest (is5 == false).  Also, compute an average erate for the
     //  overlaps to this read.
@@ -447,38 +401,80 @@ checkRead(Unitig                    *tgA,
     int32        coord  = 0;
     ufNode      *rdB    = NULL;
 
-    findEnd(op, is5, isLow, coord);  //  Simple code, but lots of comments.
+    //  DEBUG: If not to self, try to find the overlap.  Otherwise, this just adds useless clutter,
+    //  the self edge is disqualifying enough.
 
-    for (uint32 oo=0; oo<ovlLen; oo++) {
+    if (toSelf == false) {
+      findEnd(op, rdA->position.isForward(), isFirst, isLow, coord);  //  Simple code, but lots of comments.
+
+      writeLog("\n");
+      writeLog("Scan reads from #%u to #%u for %s coordinate in verified region %u-%u\n",
+               op.tigFidx, op.tigLidx,
+               (isLow) ? "low" : "high",
+               op.verified.min(), op.verified.max());
+
       for (uint32 ii=op.tigFidx; ii<=op.tigLidx; ii++) {
-        if (ovl[oo].b_iid != tgB->ufpath[ii].ident)
-          continue;
+        for (uint32 oo=0; oo<ovlLen; oo++) {
+          ufNode  *rdBii = &tgB->ufpath[ii];
 
-        erate  += ovl[oo].erate();
-        erateN += 1;
+          if (ovl[oo].b_iid != rdBii->ident)
+            continue;
 
-        if ((isLow == false) && (coord < tgB->ufpath[ii].position.max())) {
-          rdB   = &tgB->ufpath[ii];
-          coord =  tgB->ufpath[ii].position.max();
-        }
+          writeLog("Test read #%6u ident %7u %9u-%9u against verified region %9u-%9u",
+                   ii,
+                   rdBii->ident, rdBii->position.min(), rdBii->position.max(),
+                   op.verified.min(), op.verified.max());
 
-        if ((isLow == true) && (coord > tgB->ufpath[ii].position.min())) {
-          rdB   = &tgB->ufpath[ii];
-          coord =  tgB->ufpath[ii].position.min();
+          erate  += ovl[oo].erate();
+          erateN += 1;
+
+          //  Split on the higher coordinate.  If this is larger than the current coordinate AND still
+          //  within the verified overlap range, reset the coordinate.  Allow only dovetail overlaps.
+
+          if ((isLow == false) && (rdBii->position.max() < op.verified.max())) {
+            writeLog(" - CANDIDATE hangs %7d %7d", ovl[oo].a_hang, ovl[oo].b_hang);
+
+            if ((rdBii->position.max() > coord) && (rdBii->position.min() < op.verified.min()) /* && (ovl[oo].a_hang < 0) */) {
+              writeLog(" - SAVED");
+              rdB   = rdBii;
+              coord = rdBii->position.max();
+            }
+          }
+
+          //  Split on the lower coordinate.
+
+          if ((isLow == true) && (rdBii->position.min() > op.verified.min())) {
+            writeLog(" - CANDIDATE hangs %7d %7d", ovl[oo].a_hang, ovl[oo].b_hang);
+
+            if ((rdBii->position.min() < coord) && (rdBii->position.max() > op.verified.max()) /* && (ovl[oo].b_hang > 0) */) {
+              writeLog(" - SAVED");
+              rdB   = rdBii;
+              coord = rdBii->position.min();
+            }
+          }
+
+          writeLog("\n");
         }
       }
-    }
 
-    if (erateN > 0)
-      erate /= erateN;
+      if (erateN > 0)
+        erate /= erateN;
 
-    //  Huh?  If didn't find any overlaps, give up without crashing (this hasn't ever been triggered).
+      //  Huh?  If didn't find any overlaps, give up without crashing (this hasn't ever been triggered).
 
-    if (rdB == NULL) {
-      noOverlaps = true;
-      if (verbose == false)
-        continue;
-    }
+      if (rdB == NULL) {
+        writeLog("\n");
+        writeLog("Failed to find appropriate intersecting read.\n");
+        writeLog("\n");
+        flushLog();
+
+        noOverlaps = true;
+        if (verbose == false)
+          continue;
+      } else {
+        writeLog("Found appropriate intersecting read.\n");
+      }
+    }  //  End of toSelf DEBUG
 
     //  Finally, ignore it if the overlap isn't similar to everything else in the tig.  A
     //  complication here is we don't know what erate we have between tgA and tgB.  We approximate
@@ -492,7 +488,7 @@ double deviationGraph = 6;
 
     double sim = tgB->overlapConsistentWithTig(deviationGraph, op.verified.min(), op.verified.max(), erate);
 
-    if (sim  < REPEAT_FRACTION) {
+    if (sim < REPEAT_FRACTION) {
       notSimilar = true;
       if (verbose == false)
         continue;
@@ -531,6 +527,25 @@ double deviationGraph = 6;
 
     breaks.push_back(breakPointEnd(op.tigID, coord, isLow));
   }
+
+  if (breaks.size() == 0) {
+    //  Do nothing.
+  }
+
+  else if (breaks.size() > maxPlacements) {
+    writeLog("createUnitigs()-- discarding %u breakpoints.\n", breaks.size());
+  }
+
+  else if (breaks.size() <= maxPlacements) {
+    writeLog("createUnitigs()-- saving %u breakpoints to master list.\n", breaks.size());
+
+    //breakpoints.isert(breakpoints.end(), breaks.begin(), breaks.end());
+
+    for (uint32 ii=0; ii<breaks.size(); ii++)
+      breakpoints.push_back(breaks[ii]);
+  }
+
+  return(breaks.size());
 }
 
 
@@ -542,10 +557,11 @@ stripNonBackboneFromStart(TigVector &unitigs, Unitig *tig, bool isFirst) {
 
   while (RI->isBackbone(tig->ufpath[ii].ident) == false) { //  Find the first backbone read,
     unitigs.registerRead(tig->ufpath[ii].ident);
-    writeLog("WARNING: unitig %u %s read %u is not backbone, removing.\n",
+    writeLog("WARNING: unitig %u %s read %8u %9u-%9u is not backbone, removing.\n",
              tig->id(),
              isFirst ? "first" : "last ",
-             tig->ufpath[ii].ident);
+             tig->ufpath[ii].ident,
+             tig->ufpath[ii].position.bgn, tig->ufpath[ii].position.end);
     ii++;
   }
 
@@ -562,11 +578,89 @@ stripNonBackboneFromStart(TigVector &unitigs, Unitig *tig, bool isFirst) {
 
 
 void
-createUnitigs(TigVector       &contigs,
-              TigVector       &unitigs,
-              vector<tigLoc>  &unitigSource) {
+createUnitigs(TigVector             &contigs,
+              TigVector             &unitigs,
+              uint32                 minIntersectLen,
+              uint32                 maxPlacements,
+              vector<confusedEdge>  &confusedEdges,
+              vector<tigLoc>        &unitigSource) {
 
   vector<breakPointEnd>   breaks;
+
+  uint32                  nBreaksSentinel;
+  uint32                  nBreaksConfused;
+  uint32                  nBreaksIntersection;
+
+
+  //  Give each tig a pair of bogus breakpoints at the ends, just to get it in the list.  If there
+  //  are no break points, it won't be split.  These also serve as sentinels during splitting.
+
+  writeLog("\n");
+  writeLog("----------------------------------------\n");
+  writeLog("Adding sentinel breaks at the ends of contigs.\n");
+
+  for (uint32 ti=0; ti<contigs.size(); ti++) {
+    Unitig    *tig = contigs[ti];
+
+    if ((tig == NULL) ||
+        (tig->_isUnassembled == true))
+      continue;
+
+    breaks.push_back(breakPointEnd(ti, 0,                true));    //  Add one at the start of the tig
+    breaks.push_back(breakPointEnd(ti, tig->getLength(), false));   //  And one at the end
+  }
+
+  nBreaksSentinel = breaks.size();
+
+
+  //  Add breaks for any confused edges detected during repeat detection.  We should, probably,
+  //  remove duplicates, but they (should) cause no harm.
+
+  writeLog("\n");
+  writeLog("----------------------------------------\n");
+  writeLog("Adding breaks at confused reads.\n");
+
+  for (uint32 ii=0; ii<confusedEdges.size(); ii++) {
+    uint32  aid  = confusedEdges[ii].aid;
+    uint32  a3p  = confusedEdges[ii].a3p;
+
+    uint32  tid =  contigs.inUnitig(aid);
+    uint32  tpp =  contigs.ufpathIdx(aid);  //  Not the Trans-Pacific Partnership, FYI.
+
+    Unitig *tig =  contigs[tid];
+    ufNode *rda = &tig->ufpath[tpp];
+
+    if ((tig == NULL) ||                 //  It won't be NULL, but we definitely don't want to
+        (tig->_isUnassembled == true))   //  see unassembled crap here.  We don't care, and they'll crash.
+      continue;
+
+    uint32   coord = 0;       //  Pick the coordinate and set isLow based on orientation
+    bool     isLow = false;   //  and the end of the read that is confused.
+
+    if (((rda->position.isForward() == true)  && (a3p == true)) ||
+        ((rda->position.isForward() == false) && (a3p == false))) {
+      coord = rda->position.max();
+      isLow = false;
+    }
+
+    if (((rda->position.isForward() == true)  && (a3p == false)) ||
+        ((rda->position.isForward() == false) && (a3p == true))) {
+      coord = rda->position.min();
+      isLow = true;
+    }
+
+    breakPointEnd  bp(tid, coord, isLow);
+
+    if (breaks.back() == bp)
+      continue;
+
+    writeLog("createUnitigs()-- add break tig %u pos %u isLow %c\n", tid, coord, (isLow) ? 't' : 'f');
+
+    breaks.push_back(bp);
+  }
+
+  nBreaksConfused = breaks.size();
+
 
   //  Check the reads at the end of every tig for intersections to other tigs.  If the read has a
   //  compatible overlap to the middle of some other tig, split the other tig into multiple unitigs.
@@ -575,20 +669,18 @@ createUnitigs(TigVector       &contigs,
   writeLog("----------------------------------------\n");
   writeLog("Finding contig-end to contig-middle intersections.\n");
 
+  uint32          *numP = NULL;
+  uint32           lenP = 0;
+  uint32           maxP = 1024;
+
+  allocateArray(numP, maxP);
+
   for (uint32 ti=0; ti<contigs.size(); ti++) {
     Unitig    *tig = contigs[ti];
 
-    if (tig == NULL)
+    if ((tig == NULL) ||
+        (tig->_isUnassembled == true))
       continue;
-
-    if (tig->_isUnassembled == true)    //  Edge is FROM an unassembled thing, ignore it.
-      continue;
-
-    //  Give this tig a pair of bogus breakpoints at the ends, just to get it in the list.  If there
-    //  are no break points, it won't be split.  These also serve as sentinels during splitting.
-
-    breaks.push_back(breakPointEnd(ti, 0,                true));    //  Add one at the start of the tig
-    breaks.push_back(breakPointEnd(ti, tig->getLength(), false));   //  And one at the end
 
     //  Find break points in other tigs using the first and last reads.
 
@@ -606,17 +698,42 @@ createUnitigs(TigVector       &contigs,
                fi->ident, fiPlacements.size(),
                li->ident, liPlacements.size());
 
-    checkRead(tig, fi, fiPlacements, contigs, breaks, 0, true);
-    checkRead(tig, li, liPlacements, contigs, breaks, 0, false);
+    uint32 npf = checkRead(tig, fi, fiPlacements, contigs, breaks, minIntersectLen, maxPlacements, true);
+    uint32 npr = checkRead(tig, li, liPlacements, contigs, breaks, minIntersectLen, maxPlacements, false);
+
+    lenP = max(lenP, npf);
+    lenP = max(lenP, npr);
+
+    resizeArray(numP, maxP, maxP, lenP+1, resizeArray_copyData | resizeArray_clearNew);
+
+    numP[npf]++;
+    numP[npr]++;
   }
+
+  nBreaksIntersection = breaks.size();
+
+  writeLog("\n");
+  writeLog("Histogram of number of placements per contig end:\n");
+  writeLog("numPlacements  numEnds\n");
+  for (uint32 pp=0; pp<=lenP; pp++)
+    writeLog("%13u  %7u\n", pp, numP[pp]);
+  writeLog("\n");
+  writeLog("----------------------------------------\n");
+  writeLog("Found %u breakpoints (including duplicates).\n", breaks.size());
+  writeLog("      %u from sentinels.\n",                     nBreaksSentinel);
+  writeLog("      %u from confused edges.\n",                nBreaksConfused     - nBreaksSentinel);
+  writeLog("      %u from intersections.\n",                 nBreaksIntersection - nBreaksConfused);
+  writeLog("\n");
+  writeLog("Splitting contigs into unitigs.\n");
+  writeLog("\n");
+
+  delete [] numP;
 
   //  The splitTigs function operates only on a single tig.  Sort the break points
   //  by tig id to find all the break points for each tig.
 
   sort(breaks.begin(), breaks.end());
 
-  writeLog("\n");
-  writeLog("createUnitigs()-- Found %u breakpoints.\n", breaks.size());
 
   //  Allocate space for breaking tigs.  These are _vastly_ too big, but guaranteed.
 
@@ -699,10 +816,12 @@ createUnitigs(TigVector       &contigs,
   //  If the last read in the tig is not a backbone read, we can remove it and all reads that come
   //  after it (because those reads are contained).
 
+#if 1
   for (uint32 ti=0; ti<unitigs.size(); ti++) {
     Unitig    *tig = unitigs[ti];
 
-    if (tig == NULL)
+    if ((tig == NULL) ||
+        (tig->_isUnassembled == true))
       continue;
 
     //  First, check if we have any backbone reads.  If we have none, leave it as is.
@@ -725,9 +844,10 @@ createUnitigs(TigVector       &contigs,
     writeLog("unitig %u with %u reads, %u backbone and %u unplaced.\n",
              tig->id(), tig->ufpath.size(), bbReads, nbReads);
 
-    stripNonBackboneFromStart(unitigs, tig, true);
+    stripNonBackboneFromStart(unitigs, tig, true);     //  Does reverse complement at very end
     stripNonBackboneFromStart(unitigs, tig, false);
   }
+#endif
 
   //  Cleanup.
 

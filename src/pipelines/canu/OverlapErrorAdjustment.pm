@@ -184,7 +184,7 @@ sub readErrorDetectionConfigure ($) {
         print F "fi\n";
     }
 
-    print F "jobid=`printf %04d \$jobid`\n";
+    print F "jobid=`printf %05d \$jobid`\n";
     print F "\n";
     print F "if [ -e ./\$jobid.red ] ; then\n";
     print F "  echo Job previously completed successfully.\n";
@@ -245,7 +245,7 @@ sub readErrorDetectionCheck ($) {
     open(A, "< $path/red.sh") or caExit("can't open '$path/red.sh' for reading: $!", undef);
     while (<A>) {
         if (m/if.*jobid\s+=\s+(\d+)\s+.*then/) {
-            my $ji = substr("0000" . $1, -4);
+            my $ji = substr("00000" . $1, -5);
             my $jn = "unitigging/3-overlapErrorAdjustment/$ji.red";
 
             if (! fileExists($jn)) {
@@ -262,19 +262,21 @@ sub readErrorDetectionCheck ($) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " read error detection jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to detect errors in reads.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Read error detection jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Read error detection jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
@@ -495,7 +497,7 @@ sub overlapErrorAdjustmentConfigure ($) {
         print F "fi\n";
     }
 
-    print F "jobid=`printf %04d \$jobid`\n";
+    print F "jobid=`printf %05d \$jobid`\n";
     print F "\n";
     print F "if [ -e ./\$jobid.oea ] ; then\n";
     print F "  echo Job previously completed successfully.\n";
@@ -565,7 +567,7 @@ sub overlapErrorAdjustmentCheck ($) {
     open(A, "< $path/oea.sh") or caExit("can't open '$path/oea.sh' for reading: $!", undef);
     while (<A>) {
         if (m/if.*jobid\s+=\s+(\d+)\s+.*then/) {
-            my $ji = substr("0000" . $1, -4);
+            my $ji = substr("00000" . $1, -5);
 
             if (! fileExists("unitigging/3-overlapErrorAdjustment/$ji.oea")) {
                 $failureMessage .= "--   job $ji.oea FAILED.\n";
@@ -581,19 +583,21 @@ sub overlapErrorAdjustmentCheck ($) {
 
     if (scalar(@failedJobs) > 0) {
 
-        #  If not the first attempt, report the jobs that failed, and that we're recomputing.
-
-        if ($attempt > 1) {
-            print STDERR "--\n";
-            print STDERR "-- ", scalar(@failedJobs), " overlap error adjustment jobs failed:\n";
-            print STDERR $failureMessage;
-            print STDERR "--\n";
-        }
-
         #  If too many attempts, give up.
 
-        if ($attempt > getGlobal("canuIterationMax")) {
-            caExit("failed to adjust overlap error rates.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
+        if ($attempt >= getGlobal("canuIterationMax")) {
+            print STDERR "--\n";
+            print STDERR "-- Overlap error adjustment jobs failed, tried $attempt times, giving up.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
+            caExit(undef, undef);
+        }
+
+        if ($attempt > 0) {
+            print STDERR "--\n";
+            print STDERR "-- Overlap error adjustment jobs failed, retry.\n";
+            print STDERR $failureMessage;
+            print STDERR "--\n";
         }
 
         #  Otherwise, run some jobs.
