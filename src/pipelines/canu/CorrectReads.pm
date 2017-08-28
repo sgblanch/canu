@@ -116,386 +116,91 @@ sub getCorErrorRate ($) {
 
 
 
-#  Return the number of jobs for 'falcon', 'falconpipe' or 'utgcns'
+#  Return the number of correction jobs.
 #
 sub computeNumberOfCorrectionJobs ($) {
     my $asm     = shift @_;
     my $nJobs   = 0;
     my $nPerJob = 0;
-    my $path    = "correction/2-correction";
 
-    if (getGlobal("corConsensus") eq "falcon" && -e "$path/correction_inputs" ) {
-        open(F, "ls $path/correction_inputs/ |") or caExit("can't find list of correction_inputs: $!", undef);
-        while (<F>) {
-            $nJobs++  if (m/^\d\d\d\d$/);
-        }
-        close(F);
+    my $nPart    = getGlobal("corPartitions");
+    my $nReads   = getNumberOfReadsInStore("correction", $asm);
 
-        return($nJobs, undef);
-    }
+    caExit("didn't find any reads in store 'correction/$asm.gkpStore'?", undef)  if ($nReads == 0);
 
-    if ((getGlobal("corConsensus") eq "utgcns") ||
-        (getGlobal("corConsensus") eq "falconpipe") ||
-        (getGlobal("corConsensus") eq "falcon")) {
-        my $nPart    = getGlobal("corPartitions");
-        my $nReads   = getNumberOfReadsInStore("correction", $asm);
+    $nPerJob     = int($nReads / $nPart + 1);
+    $nPerJob     = getGlobal("corPartitionMin")  if ($nPerJob < getGlobal("corPartitionMin"));
 
-        caExit("didn't find any reads in store 'correction/$asm.gkpStore'?", undef)  if ($nReads == 0);
-
-        $nPerJob     = int($nReads / $nPart + 1);
-        $nPerJob     = getGlobal("corPartitionMin")  if ($nPerJob < getGlobal("corPartitionMin"));
-
-        for (my $j=1; $j<=$nReads; $j += $nPerJob) {  #  We could just divide, except for rounding issues....
-            $nJobs++;
-        }
+    for (my $j=1; $j<=$nReads; $j += $nPerJob) {  #  We could just divide, except for rounding issues....
+        $nJobs++;
     }
 
     return($nJobs, $nPerJob);
 }
 
 
-#  Generate a corStore, dump files for falcon to process, generate a script to run falcon.
-#
-sub buildCorrectionLayouts_direct ($) {
-    my $asm  = shift @_;
-    my $bin  = getBinDirectory();
+
+sub estimateMemoryNeededForCorrectionJobs ($) {
+    my $asm     = shift @_;
+    my $bin     = getBinDirectory();
     my $cmd;
 
-    my $base = "correction";
-    my $path = "correction/2-correction";
+    my $path    = "correction/2-correction";
 
-    #  Outer level buildCorrectionLayouts() ensures the task is not finished.
+    my $readID   = 0;
+    my $readLen  = 0;
+    my $numOlaps = 0;
+    my $alignLen = 0;
+    my $memEst   = 0.0;
 
-    my $maxCov = getCorCov($asm, "Local");
+    return   if (defined(getGlobal("corMemory")));
 
-    if (! -e "correction/$asm.corStore") {
+    fetchFile("$path/correctReads.memory.out");
+
+    if (! fileExists("$path/correctReads.memory.out")) {
         $cmd  = "$bin/generateCorrectionLayouts \\\n";
-        $cmd .= "  -rl ./$asm.readsToCorrect \\\n"                 if (-e "$path/$asm.readsToCorrect");
         $cmd .= "  -G ../$asm.gkpStore \\\n";
         $cmd .= "  -O ../$asm.ovlStore \\\n";
-        $cmd .= "  -S ./$asm.globalScores \\\n"                    if (-e "$path/$asm.globalScores");
-        $cmd .= "  -T ../$asm.corStore.WORKING \\\n";
-        $cmd .= "  -L " . getGlobal("corMinEvidenceLength") . " \\\n"  if (defined(getGlobal("corMinEvidenceLength")));
-        $cmd .= "  -E " . getGlobal("corMaxEvidenceErate")  . " \\\n"  if (defined(getGlobal("corMaxEvidenceErate")));
-        $cmd .= "  -C $maxCov \\\n"                                    if (defined($maxCov));
-        $cmd .= "  -legacy \\\n"                                       if (defined(getGlobal("corLegacyFilter")));
-        $cmd .= "> ../$asm.corStore.err 2>&1";
+        $cmd .= "  -r ./$asm.readsToCorrect \\\n"    if (-e "$path/$asm.readsToCorrect");
+        $cmd .= "  -M \\\n";
+        $cmd .= " > ./correctReads.memory.out 2> ./correctReads.memory.err\n";
 
         if (runCommand($path, $cmd)) {
-            caExit("failed to generate layouts for correction", "correction/$asm.corStore.err");
+            caExit("read correction memory estimate failed", "$path/correctReads.memory.err");
         }
 
-        rename "correction/$asm.corStore.WORKING", "correction/$asm.corStore";
+        unlink "$path/correctReads.memory.err";
+        stashFile("$path/correctReads.memory.out");
     }
 
-    # first we call this function to compute partioning
-    my ($jobs, $nPer) = computeNumberOfCorrectionJobs($asm);
-
-    make_path("$path/correction_inputs")   if (! -d "$path/correction_inputs");
-    make_path("$path/correction_outputs")  if (! -d "$path/correction_outputs");
-
-    if (getGlobal("corConsensus") eq "falcon") {
-        $cmd  = "$bin/createFalconSenseInputs \\\n";
-        $cmd .= "  -G ../$asm.gkpStore \\\n";
-        $cmd .= "  -T ../$asm.corStore 1 \\\n";
-        $cmd .= "  -o ./correction_inputs/ \\\n";
-        $cmd .= "  -p " . $jobs . " \\\n";
-        $cmd .= "> ./correction_inputs.err 2>&1";
-
-        if (runCommand($path, $cmd)) {
-            caExit("failed to generate falcon inputs", "$path/correction_inputs.err");
+    open(F, "< $path/correctReads.memory.out") or caExit("can't open '$path/correctReads.memory.out' for reading: $!", undef);
+    while (<F>) {
+        if (m/Based\son\sread\s(\d+)\sof\slength\s(\d+)\swith\s(\d+)\soverlaps\scovering\s(\d+)\sbases,\sexpecting\sto\suse\s\d+\sbytes,\s(\d+\.\d+)\sGB\smemory\susage/) {
+            $readID   = $1;
+            $readLen  = $2;
+            $numOlaps = $3;
+            $alignLen = $4;
+            $memEst   = $5;
         }
     }
-
-    if (getGlobal("corConsensus") eq "falcon") {
-       #the second call will confirm we have the proper number of output files and set jobs
-       ($jobs, $nPer) = computeNumberOfCorrectionJobs($asm);
-    }
-
-    #getAllowedResources("", "cor");
-
-    open(F, "> $path/correctReads.sh") or caExit("can't open '$path/correctReads.sh'", undef);
-
-    print F "#!" . getGlobal("shell") . "\n";
-    print F "\n";
-    print F getBinDirectoryShellCode();
-    print F "\n";
-    print F setWorkDirectoryShellCode($path);
-    print F fetchStoreShellCode("$base/$asm.gkpStore", "$base/2-correction", "");
-    print F "\n";
-    print F getJobIDShellCode();
-    print F "\n";
-    print F "if [ \$jobid -gt $jobs ]; then\n";
-    print F "  echo Error: Only $jobs partitions, you asked for \$jobid.\n";
-    print F "  exit 1\n";
-    print F "fi\n";
-    print F "\n";
-    if (getGlobal("corConsensus") eq "utgcns") {
-       print F "bgn=`expr \\( \$jobid - 1 \\) \\* $nPer`\n";
-       print F "end=`expr \\( \$jobid + 0 \\) \\* $nPer`\n";
-       print F "\n";
-    }
-    print F "jobid=`printf %04d \$jobid`\n";
-    print F "\n";
-    print F "if [ -e \"./correction_outputs/\$jobid.fasta\" ] ; then\n";
-    print F "  echo Job finished successfully.\n";
-    print F "  exit 0\n";
-    print F "fi\n";
-    print F "\n";
-    print F "if [ ! -d \"./correction_outputs\" ] ; then\n";
-    print F "  mkdir -p \"./correction_outputs\"\n";
-    print F "fi\n";
-    print F "\n";
-
-    print F "gkpStore=\"../$asm.gkpStore\"\n";
-    print F "\n";
-
-    my $stageDir = getGlobal("stageDirectory");
-
-    if (defined($stageDir)) {
-        print F "if [ ! -d $stageDir ] ; then\n";
-        print F "  mkdir -p $stageDir\n";
-        print F "fi\n";
-        print F "\n";
-        print F "mkdir -p $stageDir/$asm.gkpStore\n";
-        print F "\n";
-        print F "echo Start copy at `date`\n";
-        print F "cp -p \$gkpStore/info      $stageDir/$asm.gkpStore/info\n";
-        print F "cp -p \$gkpStore/libraries $stageDir/$asm.gkpStore/libraries\n";
-        print F "cp -p \$gkpStore/reads     $stageDir/$asm.gkpStore/reads\n";
-        print F "cp -p \$gkpStore/blobs     $stageDir/$asm.gkpStore/blobs\n";
-        print F "echo Finished   at `date`\n";
-        print F "\n";
-        print F "gkpStore=\"$stageDir/$asm.gkpStore\"\n";
-        print F "\n";
-    }
-
-    my $erate  = getCorErrorRate($asm);
-    my $minidt = 1 - $erate;
-
-    #  UTGCNS for correction is writing FASTQ, but needs to write FASTA.  The names below were changed to fasta preemptively.
-
-    if (getGlobal("corConsensus") eq "utgcns") {
-        caExit("UTGCNS for correction is writing FASTQ, but needs to write FASTA", undef);
-        print F "\n";
-        print F "\$bin/utgcns \\\n";
-        print F "  -u \$bgn-\$end \\\n";
-        print F "  -e $erate \\\n";
-        print F "  -G \$gkpStore \\\n";
-        print F "  -T ../$asm.corStore 1 . \\\n";
-        print F "  -O ./correction_outputs/\$jobid.cns.WORKING \\\n";
-        print F "  -L ./correction_outputs/\$jobid.layout.WORKING \\\n";
-        print F "  -F ./correction_outputs/\$jobid.fasta.WORKING \\\n";
-        print F "&& \\\n";
-        print F "mv ./correction_outputs/\$jobid.cns.WORKING ./correction_outputs/\$jobid.cns \\\n";
-        print F "&& \\\n";
-        print F "mv ./correction_outputs/\$jobid.layout.WORKING ./correction_outputs/\$jobid.layout \\\n";
-        print F "&& \\\n";
-        print F "mv ./correction_outputs/\$jobid.fasta.WORKING ./correction_outputs/\$jobid.fasta \\\n";
-        print F "\n";
-    }
-
-    if (getGlobal("corConsensus") eq "falcon") {
-        print F "\n";
-        print F "\$bin/falcon_sense \\\n";
-        print F "  --min_idt $minidt \\\n";
-        print F "  --min_len " . getGlobal("minReadLength") . "\\\n";
-        print F "  --max_read_len " . 2 * getMaxReadLengthInStore($base, $asm) . " \\\n";
-        print F "  --min_ovl_len " . getGlobal("minOverlapLength") . "\\\n";
-        print F "  --min_cov " . getGlobal("corMinCoverage") . " \\\n";
-        print F "  --n_core " . getGlobal("corThreads") . " \\\n";
-        print F "  < ./correction_inputs/\$jobid \\\n";
-        print F "  > ./correction_outputs/\$jobid.fasta.WORKING \\\n";
-        print F " 2> ./correction_outputs/\$jobid.err \\\n";
-        print F "&& \\\n";
-        print F "mv ./correction_outputs/\$jobid.fasta.WORKING ./correction_outputs/\$jobid.fasta \\\n";
-    }
-
-    if (defined($stageDir)) {
-        print F "\n";
-        print F "rm -rf $stageDir/$asm.gkpStore\n";   #  Prevent accidents of 'rm -rf /' if stageDir = "/".
-        print F "rmdir  $stageDir\n";
-    }
-
-    print F "\n";
-    print F "exit 0\n";
-
     close(F);
 
-    makeExecutable("$path/correctReads.sh");
-    stashFile("$path/correctReads.sh");
+    if ($memEst == 0) {
+        $memEst = 8;
 
-  finishStage:
-    ;
-  allDone:
-}
+        print STDERR "-- WARNING:\n";
+        print STDERR "-- WARNING: Failed to parse read correction memory size estimate; set corMemory to 8 GB default.\n";
+        print STDERR "-- WARNING:\n";
+    } else {
+        $memEst   = int($memEst + 0.5);    #  Round up to the next GB.
+        $alignLen = int($alignLen / $numOlaps);
 
-
-
-
-
-#  For falcon_sense, using a pipe and no intermediate files
-#
-sub buildCorrectionLayouts_piped ($) {
-    my $asm  = shift @_;
-    my $bin  = getBinDirectory();
-    my $cmd;
-
-    my $base = "correction";
-    my $path = "correction/2-correction";
-
-    #  Outer level buildCorrectionLayouts() ensures the task is not finished.
-
-    make_path("$path/correction_inputs")   if (! -d "$path/correction_inputs");
-    make_path("$path/correction_outputs")  if (! -d "$path/correction_outputs");
-
-    my ($nJobs, $nPerJob)  = computeNumberOfCorrectionJobs($asm);  #  Does math based on number of reads and parameters.
-
-    my $nReads             = getNumberOfReadsInStore("correction", $asm);
-
-    #getAllowedResources("", "cor");
-
-    open(F, "> $path/correctReads.sh") or caExit("can't open '$path/correctReads.sh'", undef);
-
-    print F "#!" . getGlobal("shell") . "\n";
-    print F "\n";
-    print F getBinDirectoryShellCode();
-    print F "\n";
-    print F setWorkDirectoryShellCode($path);
-    print F fetchStoreShellCode("$base/$asm.gkpStore", "$base/2-correction", "");
-    print F "\n";
-    print F getJobIDShellCode();
-    print F "\n";
-    print F "if [ \$jobid -gt $nJobs ]; then\n";
-    print F "  echo Error: Only $nJobs partitions, you asked for \$jobid.\n";
-    print F "  exit 1\n";
-    print F "fi\n";
-    print F "\n";
-
-    my  $bgnID   = 1;
-    my  $endID   = $bgnID + $nPerJob - 1;
-    my  $jobID   = 1;
-
-    while ($bgnID < $nReads) {
-        $endID  = $bgnID + $nPerJob - 1;
-        $endID  = $nReads  if ($endID > $nReads);
-
-        print F "if [ \$jobid -eq $jobID ] ; then\n";
-        print F "  bgn=$bgnID\n";
-        print F "  end=$endID\n";
-        print F "fi\n";
-
-        $bgnID = $endID + 1;
-        $jobID++;
+        print STDERR "--\n";
+        print STDERR "-- Set corMemory to $memEst GB based on read $readID of length $readLen with $numOlaps overlaps of average size $alignLen.\n";
+        print STDERR "--\n";
     }
 
-    print F "\n";
-    print F "jobid=`printf %04d \$jobid`\n";
-    print F "\n";
-    print F "if [ -e \"./correction_outputs/\$jobid.fasta\" ] ; then\n";
-    print F "  echo Job finished successfully.\n";
-    print F "  exit 0\n";
-    print F "fi\n";
-    print F "\n";
-    print F "if [ ! -d \"./correction_outputs\" ] ; then\n";
-    print F "  mkdir -p \"./correction_outputs\"\n";
-    print F "fi\n";
-    print F "\n";
-
-    print F fetchStoreShellCode("correction/$asm.gkpStore", "correction/3-correction", "");
-    print F "\n";
-    print F fetchStoreShellCode("correction/$asm.ovlStore", "correction/3-correction", "");
-    print F "\n";
-    print F fetchFileShellCode("correction/2-correction", "$asm.readsToCorrect", "");
-    print F "\n";
-    print F fetchFileShellCode("correction/2-correction", "$asm.globalScores", "");
-    print F "\n";
-
-    print F "gkpStore=\"../$asm.gkpStore\"\n";
-    print F "\n";
-
-    my $stageDir = getGlobal("stageDirectory");
-
-    if (defined($stageDir)) {
-        print F "if [ ! -d $stageDir ] ; then\n";
-        print F "  mkdir -p $stageDir\n";
-        print F "fi\n";
-        print F "\n";
-        print F "mkdir -p $stageDir/$asm.gkpStore\n";
-        print F "\n";
-        print F "echo Start copy at `date`\n";
-        print F "cp -p \$gkpStore/info      $stageDir/$asm.gkpStore/info\n";
-        print F "cp -p \$gkpStore/libraries $stageDir/$asm.gkpStore/libraries\n";
-        print F "cp -p \$gkpStore/reads     $stageDir/$asm.gkpStore/reads\n";
-        print F "cp -p \$gkpStore/blobs     $stageDir/$asm.gkpStore/blobs\n";
-        print F "echo Finished   at `date`\n";
-        print F "\n";
-        print F "gkpStore=\"$stageDir/$asm.gkpStore\"\n";
-        print F "\n";
-    }
-
-    my $maxCov   = getCorCov($asm, "Local");
-
-    my $erate    = getCorErrorRate($asm);
-    my $minidt   = 1 - $erate;
-
-    print F "\n";
-    print F "if [ \"x\$BASH\" != \"x\" ] ; then\n";   #  Needs doublequotes, else shell doesn't expand $BASH
-    print F "  set -o pipefail\n";
-    print F "fi\n";
-    print F "\n";
-    print F "( \\\n";
-    print F "\$bin/generateCorrectionLayouts -b \$bgn -e \$end \\\n";
-    print F "  -rl ./$asm.readsToCorrect \\\n"                     if (-e "$path/$asm.readsToCorrect");
-    print F "  -G \$gkpStore \\\n";
-    print F "  -O ../$asm.ovlStore \\\n";
-    print F "  -S ./$asm.globalScores \\\n"                        if (-e "$path/$asm.globalScores");
-    print F "  -L " . getGlobal("corMinEvidenceLength") . " \\\n"  if (defined(getGlobal("corMinEvidenceLength")));
-    print F "  -E " . getGlobal("corMaxEvidenceErate")  . " \\\n"  if (defined(getGlobal("corMaxEvidenceErate")));
-    print F "  -C $maxCov \\\n"                                    if (defined($maxCov));
-    print F "  -legacy \\\n"                                       if (defined(getGlobal("corLegacyFilter")));
-    print F "  -F \\\n";
-    print F "&& \\\n";
-    print F "  touch ./correction_outputs/\$jobid.dump.success \\\n";
-    print F ") \\\n";
-    print F "| \\\n";
-    print F "\$bin/falcon_sense \\\n";
-    print F "  --min_idt $minidt \\\n";
-    print F "  --min_len " . getGlobal("minReadLength") . "\\\n";
-    print F "  --max_read_len " . 2 * getMaxReadLengthInStore($base, $asm) . " \\\n";
-    print F "  --min_ovl_len " . getGlobal("minOverlapLength") . "\\\n";
-    print F "  --min_cov " . getGlobal("corMinCoverage") . " \\\n";
-    print F "  --n_core " . getGlobal("corThreads") . " \\\n";
-    print F "  > ./correction_outputs/\$jobid.fasta.WORKING \\\n";
-    print F " 2> ./correction_outputs/\$jobid.err \\\n";
-    print F "&& \\\n";
-    print F "mv ./correction_outputs/\$jobid.fasta.WORKING ./correction_outputs/\$jobid.fasta \\\n";
-    print F "\n";
-    print F "if [ ! -e \"./correction_outputs/\$jobid.dump.success\" ] ; then\n";
-    print F "  echo Read layout generation failed.\n";
-    print F "  mv ./correction_outputs/\$jobid.fasta ./correction_outputs/\$jobid.fasta.INCOMPLETE\n";
-    print F "fi\n";
-    print F "\n";
-
-    if (defined($stageDir)) {
-        print F "rm -rf $stageDir/$asm.gkpStore\n";   #  Prevent accidents of 'rm -rf /' if stageDir = "/".
-        print F "rmdir  $stageDir\n";
-        print F "\n";
-    }
-
-    print F stashFileShellCode("$path", "correction_outputs/\$jobid.fasta", "");
-
-    print F "\n";
-    print F "exit 0\n";
-
-    close(F);
-
-    makeExecutable("$path/correctReads.sh");
-    stashFile("$path/correctReads.sh");
-
-  finishStage:
-    ;
-  allDone:
+    setGlobal("corMemory", $memEst);
 }
 
 
@@ -576,12 +281,11 @@ sub expensiveFilter ($) {
         $cmd  = "$bin/generateCorrectionLayouts \\\n";
         $cmd .= "  -G ../$asm.gkpStore \\\n";
         $cmd .= "  -O ../$asm.ovlStore \\\n";
-        $cmd .= "  -S ./$asm.globalScores \\\n"                        if (-e "$path/$asm.globalScores");
-        $cmd .= "  -L " . getGlobal("corMinEvidenceLength") . " \\\n"  if (defined(getGlobal("corMinEvidenceLength")));
-        $cmd .= "  -E " . getGlobal("corMaxEvidenceErate")  . " \\\n"  if (defined(getGlobal("corMaxEvidenceErate")));
-        $cmd .= "  -c $minCov \\\n"                                    if (defined($minCov));
-        $cmd .= "  -C $maxCov \\\n"                                    if (defined($maxCov));
-        $cmd .= "  -legacy \\\n"                                       if (defined(getGlobal("corLegacyFilter")));
+        $cmd .= "  -S ./$asm.globalScores \\\n"                         if (-e "$path/$asm.globalScores");
+        $cmd .= "  -eL " . getGlobal("corMinEvidenceLength") . " \\\n"  if (defined(getGlobal("corMinEvidenceLength")));
+        $cmd .= "  -eE " . getGlobal("corMaxEvidenceErate")  . " \\\n"  if (defined(getGlobal("corMaxEvidenceErate")));
+        $cmd .= "  -ec $minCov \\\n"                                    if (defined($minCov));
+        $cmd .= "  -eC $maxCov \\\n"                                    if (defined($maxCov));
         $cmd .= "  -p ./$asm.estimate.WORKING";
 
         if (runCommand($path, $cmd)) {
@@ -856,6 +560,145 @@ sub expensiveFilter ($) {
 
 
 
+sub setupFalcon ($) {
+    my $asm     = shift @_;
+    my $bin     = getBinDirectory();
+    my $cmd;
+
+    my $base    = "correction";
+    my $path    = "correction/2-correction";
+
+    make_path("$path/results")  if (! -d "$path/results");
+
+    estimateMemoryNeededForCorrectionJobs($asm);
+
+    my ($nJobs, $nPerJob)  = computeNumberOfCorrectionJobs($asm);  #  Does math based on number of reads and parameters.
+
+    my $nReads             = getNumberOfReadsInStore("correction", $asm);
+
+    open(F, "> $path/correctReads.sh") or caExit("can't open '$path/correctReads.sh'", undef);
+
+    print F "#!" . getGlobal("shell") . "\n";
+    print F "\n";
+    print F getBinDirectoryShellCode();
+    print F "\n";
+    print F setWorkDirectoryShellCode($path);
+    print F fetchStoreShellCode("$base/$asm.gkpStore", "$base/2-correction", "");
+    print F "\n";
+    print F getJobIDShellCode();
+    print F "\n";
+    print F "if [ \$jobid -gt $nJobs ]; then\n";
+    print F "  echo Error: Only $nJobs partitions, you asked for \$jobid.\n";
+    print F "  exit 1\n";
+    print F "fi\n";
+    print F "\n";
+
+    my  $bgnID   = 1;
+    my  $endID   = $bgnID + $nPerJob - 1;
+    my  $jobID   = 1;
+
+    while ($bgnID < $nReads) {
+        $endID  = $bgnID + $nPerJob - 1;
+        $endID  = $nReads  if ($endID > $nReads);
+
+        print F "if [ \$jobid -eq $jobID ] ; then\n";
+        print F "  bgn=$bgnID\n";
+        print F "  end=$endID\n";
+        print F "fi\n";
+
+        $bgnID = $endID + 1;
+        $jobID++;
+    }
+
+    print F "\n";
+    print F "jobid=`printf %04d \$jobid`\n";
+    print F "\n";
+    print F "if [ -e \"./results/\$jobid.fasta\" ] ; then\n";
+    print F "  echo Job finished successfully.\n";
+    print F "  exit 0\n";
+    print F "fi\n";
+    print F "\n";
+    print F "if [ ! -d \"./results\" ] ; then\n";
+    print F "  mkdir -p \"./results\"\n";
+    print F "fi\n";
+    print F "\n";
+
+    print F fetchStoreShellCode("correction/$asm.gkpStore", "correction/3-correction", "");
+    print F "\n";
+    print F fetchStoreShellCode("correction/$asm.ovlStore", "correction/3-correction", "");
+    print F "\n";
+    print F fetchFileShellCode("correction/2-correction", "$asm.readsToCorrect", "");
+    print F "\n";
+    print F fetchFileShellCode("correction/2-correction", "$asm.globalScores", "");
+    print F "\n";
+
+    print F "gkpStore=\"../$asm.gkpStore\"\n";
+    print F "\n";
+
+    my $stageDir = getGlobal("stageDirectory");
+
+    if (defined($stageDir)) {
+        print F "if [ ! -d $stageDir ] ; then\n";
+        print F "  mkdir -p $stageDir\n";
+        print F "fi\n";
+        print F "\n";
+        print F "mkdir -p $stageDir/$asm.gkpStore\n";
+        print F "\n";
+        print F "echo Start copy at `date`\n";
+        print F "cp -p \$gkpStore/info      $stageDir/$asm.gkpStore/info\n";
+        print F "cp -p \$gkpStore/libraries $stageDir/$asm.gkpStore/libraries\n";
+        print F "cp -p \$gkpStore/reads     $stageDir/$asm.gkpStore/reads\n";
+        print F "cp -p \$gkpStore/blobs     $stageDir/$asm.gkpStore/blobs\n";
+        print F "echo Finished   at `date`\n";
+        print F "\n";
+        print F "gkpStore=\"$stageDir/$asm.gkpStore\"\n";
+        print F "\n";
+    }
+
+    my $maxCov   = getCorCov($asm, "Local");
+
+    my $erate    = getCorErrorRate($asm);
+    my $minidt   = 1 - $erate;
+
+    print F "\n";
+    print F "\$bin/generateCorrectionLayouts -b \$bgn -e \$end \\\n";
+    print F "  -G \$gkpStore \\\n";
+    print F "  -O ../$asm.ovlStore \\\n";
+    print F "  -r ./$asm.readsToCorrect \\\n"                       if (-e "$path/$asm.readsToCorrect");
+    print F "  -S ./$asm.globalScores \\\n"                         if (-e "$path/$asm.globalScores");
+    print F "  -C \\\n";
+    print F "  -t  " . getGlobal("corThreads") . " \\\n";
+    print F "  -eL " . getGlobal("corMinEvidenceLength") . " \\\n"  if (defined(getGlobal("corMinEvidenceLength")));
+    print F "  -eE " . getGlobal("corMaxEvidenceErate")  . " \\\n"  if (defined(getGlobal("corMaxEvidenceErate")));
+    print F "  -eC $maxCov \\\n"                                    if (defined($maxCov));
+    print F "  -ci $minidt \\\n";
+    print F "  -cl " . getGlobal("minReadLength") . "\\\n";
+    print F "  -cc " . getGlobal("corMinCoverage") . " \\\n";
+    print F "  > ./results/\$jobid.fasta.WORKING \\\n";
+    print F " 2> ./results/\$jobid.err \\\n";
+    print F "&& \\\n";
+    print F "mv ./results/\$jobid.fasta.WORKING ./results/\$jobid.fasta \\\n";
+    print F "\n";
+
+    if (defined($stageDir)) {
+        print F "rm -rf $stageDir/$asm.gkpStore\n";   #  Prevent accidents of 'rm -rf /' if stageDir = "/".
+        print F "rmdir  $stageDir\n";
+        print F "\n";
+    }
+
+    print F stashFileShellCode("$path", "results/\$jobid.fasta", "");
+
+    print F "\n";
+    print F "exit 0\n";
+
+    close(F);
+
+    makeExecutable("$path/correctReads.sh");
+    stashFile("$path/correctReads.sh");
+}
+
+
+
 sub buildCorrectionLayouts ($) {
     my $asm     = shift @_;
     my $bin     = getBinDirectory();
@@ -971,9 +814,9 @@ sub buildCorrectionLayouts ($) {
         print STDERR "-- Filtered list of reads found in '$path/$asm.readsToCorrect'.\n";
     }
 
-    buildCorrectionLayouts_direct($asm)      if (getGlobal("corConsensus") eq "utgcns");
-    buildCorrectionLayouts_direct($asm)      if (getGlobal("corConsensus") eq "falcon");
-    buildCorrectionLayouts_piped($asm)       if (getGlobal("corConsensus") eq "falconpipe");
+    #  Now just emit a script.
+
+    setupFalcon($asm)    if (getGlobal("corConsensus") eq "falcon");
 
   finishStage:
     emitStage($asm, "cor-buildCorrectionLayouts");
@@ -1010,6 +853,10 @@ sub generateCorrectedReads ($) {
         setGlobal("corStageSpace", $size);
     }
 
+    #  Compute expected size of jobs, set if not set already.
+
+    estimateMemoryNeededForCorrectionJobs($asm);
+
     #  Figure out if all the tasks finished correctly.
 
     fetchFile("$path/correctReads.sh");
@@ -1022,11 +869,11 @@ sub generateCorrectedReads ($) {
     my $failureMessage = "";
 
     for (my $job=1; $job <= $jobs; $job++) {
-        if (fileExists("$path/correction_outputs/$currentJobID.fasta")) {
-            push @successJobs, "$path/correction_outputs/$currentJobID.fasta\n";
+        if (fileExists("$path/results/$currentJobID.fasta")) {
+            push @successJobs, "$path/results/$currentJobID.fasta\n";
 
         } else {
-            $failureMessage .= "--   job $path/correction_outputs/$currentJobID.fasta FAILED.\n";
+            $failureMessage .= "--   job $path/results/$currentJobID.fasta FAILED.\n";
             push @failedJobs, $job;
         }
 
@@ -1475,22 +1322,22 @@ sub dumpCorrectedReads ($) {
         while (<F>) {
             chomp;
 
-            if (m/^(.*)\/correction_outputs\/0*(\d+).fasta$/) {
+            if (m/^(.*)\/results\/0*(\d+).fasta$/) {
                 my $ID6 = substr("00000" . $2, -6);
                 my $ID4 = substr("000"   . $2, -4);
                 my $ID0 = $2;
 
-                if (-e "$1/correction_outputs/$ID4.dump.success") {
+                if (-e "$1/results/$ID4.dump.success") {
                     $Nsuccess++;
-                    unlink "$1/correction_outputs/$ID4.dump.success";
+                    unlink "$1/results/$ID4.dump.success";
                 }
-                if (-e "$1/correction_outputs/$ID4.err") {
+                if (-e "$1/results/$ID4.err") {
                     $Nerr++;
-                    unlink "$1/correction_outputs/$ID4.err";
+                    unlink "$1/results/$ID4.err";
                 }
-                if (-e "$1/correction_outputs/$ID4.fasta") {
+                if (-e "$1/results/$ID4.fasta") {
                     $Nfasta++;
-                    unlink "$1/correction_outputs/$ID4.fasta";
+                    unlink "$1/results/$ID4.fasta";
                 }
 
                 if (-e "$1/correctReads.$ID6.out") {
