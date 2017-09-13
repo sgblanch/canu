@@ -238,6 +238,9 @@ public:
   uint32     b_bgn(void) const          { return((dat.ovl.flipped) ? (g->gkStore_getRead(b_iid)->gkRead_sequenceLength() - dat.ovl.bhg5) : (dat.ovl.bhg5)); };
   uint32     b_end(void) const          { return((dat.ovl.flipped) ? (dat.ovl.bhg3) : (g->gkStore_getRead(b_iid)->gkRead_sequenceLength() - dat.ovl.bhg3)); };
 
+  uint32     a_len(void) const          { return(g->gkStore_getRead(a_iid)->gkRead_sequenceLength() - dat.ovl.ahg3 - dat.ovl.ahg5); };
+  uint32     b_len(void) const          { return(g->gkStore_getRead(b_iid)->gkRead_sequenceLength() - dat.ovl.bhg3 - dat.ovl.bhg5); };
+
   uint32     span(void) const           { return(dat.ovl.span); };
   void       span(uint32 s)             { dat.ovl.span = s; };
 
@@ -262,7 +265,9 @@ public:
   uint32     flipped(void) const        { return(dat.ovl.flipped == true); };
 
   void       erate(double e)            { dat.ovl.evalue = AS_OVS_encodeEvalue(e); };
-  double     erate(void) const          { return(AS_OVS_decodeEvalue(dat.ovl.evalue)); };
+  double     erate(void) const          { return(    AS_OVS_decodeEvalue(dat.ovl.evalue)); };
+  double     identity(void) const       { return(1 - AS_OVS_decodeEvalue(dat.ovl.evalue)); };
+
 
   void       evalue(uint64 e)           { dat.ovl.evalue = e; };
   uint64     evalue(void) const         { return(dat.ovl.evalue); };
@@ -293,6 +298,16 @@ public:
   uint32     overlap3primeIsPartial(void) const { return((dat.ovl.ahg3 > 0) && (dat.ovl.bhg3 > 0)); };
 
   uint32     overlapIsPartial(void)       const { return(overlap5primeIsPartial() || overlap3primeIsPartial()); };
+
+  //  Score this overlap based on length and identity.  Used during read correction.  Note the
+  //  implicit conversion to floating point; lengths over 131072 will overflow a 32-bit signed
+  //  integer before the division.
+
+  uint16     overlapScore(bool forB=false) const {
+    return((forB == false) ?
+           (uint16)floor(16384.0 * identity() * a_len() / g->gkStore_getRead(a_iid)->gkRead_sequenceLength()) :
+           (uint16)floor(16384.0 * identity() * b_len() / g->gkStore_getRead(b_iid)->gkRead_sequenceLength()));
+  };
 
   char      *toString(char *str, ovOverlapDisplayType type, bool newLine);
 

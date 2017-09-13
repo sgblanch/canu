@@ -241,17 +241,17 @@ public:
 
   ovStoreWriter(const char *path, gkStore *gkp, uint32 fileLimit, uint32 fileID, uint32 jobIdxMax);
 
-  void         writeOverlaps(ovOverlap *ovls, uint64 ovlsLen);
-
   uint64       loadBucketSizes(uint64 *bucketSizes);
   void         loadOverlapsFromSlice(uint32 slice, uint64 expectedLen, ovOverlap *ovls, uint64& ovlsLen);
-  void         removeOverlapSlice(void);
+
+  void         writeOverlaps(ovOverlap *ovls, uint64 ovlsLen);
 
   void         mergeInfoFiles(void);
   void         mergeHistogram(void);
 
   bool         testIndex(bool doFixes);
 
+  void         removeOverlapSlice(void);
   void         checkSortingIsComplete(void);
   void         removeAllIntermediateFiles(void);
 
@@ -316,7 +316,8 @@ public:
   void         resetRange(void);
 
   uint64       numOverlapsInRange(void);
-  uint32 *     numOverlapsPerFrag(uint32 &firstFrag, uint32 &lastFrag);
+
+  uint32      *numOverlapsPerRead(uint32  numReads=0);
 
   //  Add new evalues for reads between bgnID and endID.  No checking of IDs is done, but the number
   //  of evalues must agree.

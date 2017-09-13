@@ -37,10 +37,32 @@
 
 #include "AS_UTL_decodeRange.H"
 
+#include "computeGlobalScore.H"
+
 #include <vector>
 #include <algorithm>
 
 using namespace std;
+
+
+
+
+FILE *
+openOutput(char *fileName, bool doOpen) {
+  errno = 0;
+
+  if ((doOpen == false) || (fileName == NULL))
+    return(NULL);
+
+  FILE *F = fopen(fileName, "w");
+
+  if (errno)
+    fprintf(stderr, "ERROR: failed to open '%s' for writing: %s\n", fileName, strerror(errno)), exit(1);
+
+  return(F);
+}
+
+
 
 int
 main(int argc, char **argv) {
@@ -49,6 +71,10 @@ main(int argc, char **argv) {
   char           *scoreFileName    = NULL;
   char            logFileName[FILENAME_MAX];
   char            statsFileName[FILENAME_MAX];
+
+  bool            doEstimate       = true;
+  bool            doExact          = false;
+  bool            doCompare        = false;
 
   bool            noLog            = false;
   bool            noStats          = false;
@@ -60,8 +86,6 @@ main(int argc, char **argv) {
 
   double          maxErate         = 1.0;
   double          minErate         = 1.0;
-
-  bool		  legacyScore	   = false;
 
   argc = AS_configure(argc, argv);
 
@@ -76,6 +100,20 @@ main(int argc, char **argv) {
 
     } else if (strcmp(argv[arg], "-S") == 0) {
       scoreFileName = argv[++arg];
+
+
+    } else if (strcmp(argv[arg], "-estimate") == 0) {
+      doEstimate = true;
+      doExact    = false;
+
+    } else if (strcmp(argv[arg], "-exact") == 0) {
+      doEstimate = false;
+      doExact    = true;
+
+    } else if (strcmp(argv[arg], "-compare") == 0) {
+      doEstimate = true;
+      doExact    = true;
+      doCompare  = true;
 
 
     } else if (strcmp(argv[arg], "-c") == 0) {
@@ -94,9 +132,6 @@ main(int argc, char **argv) {
 
     } else if (strcmp(argv[arg], "-nostats") == 0) {
       noStats = true;
-
-    } else if (strcmp(argv[arg], "-legacy") == 0) {
-      legacyScore = true;
 
     } else {
       fprintf(stderr, "ERROR:  invalid arg '%s'\n", argv[arg]);
@@ -124,6 +159,11 @@ main(int argc, char **argv) {
     fprintf(stderr, "                  per-read logging to 'scoreFile.log' (see -nolog)\n");
     fprintf(stderr, "                  summary statistics to 'scoreFile.stats' (see -nostats)\n");
     fprintf(stderr, "\n");
+    fprintf(stderr, "  -estimate       estimate the cutoff from precomputed scores\n");
+    fprintf(stderr, "  -exact          compute an exact cutoff by reading all overlaps\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  -compare        output a comparison of estimated vs exact scores\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "  -c coverage     retain at most this many overlaps per read\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -l length       filter overlaps shorter than this length\n");
@@ -131,6 +171,8 @@ main(int argc, char **argv) {
     fprintf(stderr, "                    example:  -e 0.20          filter overlaps above 20%% error\n");
     fprintf(stderr, "                    example:  -e 0.05-0.20     filter overlaps below 5%% error\n");
     fprintf(stderr, "                                                            or above 20%% error\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  Length and Fraction Error filtering NOT SUPPORTED with -estimate.\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -nolog          don't create 'scoreFile.log'\n");
     fprintf(stderr, "  -nostats        don't create 'scoreFile.stats'\n");
@@ -154,203 +196,85 @@ main(int argc, char **argv) {
     minErate = 0.0;
   }
 
-  uint32    maxEvalue = AS_OVS_encodeEvalue(maxErate);
-  uint32    minEvalue = AS_OVS_encodeEvalue(minErate);;
+  uint32             maxEvalue   = AS_OVS_encodeEvalue(maxErate);
+  uint32             minEvalue   = AS_OVS_encodeEvalue(minErate);;
 
-  gkStore  *gkpStore  = gkStore::gkStore_open(gkpStoreName);
+  gkStore           *gkpStore    = gkStore::gkStore_open(gkpStoreName);
 
-  ovStore  *inpStore  = new ovStore(ovlStoreName, gkpStore);
+  ovStore           *ovlStore    = new ovStore(ovlStoreName, gkpStore);
+  ovStoreHistogram  *ovlHisto    = ovlStore->getHistogram();
 
-  uint64   *scores    = new uint64 [gkpStore->gkStore_getNumReads() + 1];
+  uint32             *numOlaps   = ovlStore->numOverlapsPerRead();
 
+  uint32              ovlLen     = 0;
+  uint32              ovlMax     = 131072;
+  ovOverlap          *ovl        = (doExact == true) ? ovOverlap::allocateOverlaps(gkpStore, ovlMax) : NULL;
 
-  snprintf(logFileName, FILENAME_MAX, "%s.log", scoreFileName);
+  uint16             *scores     = new uint16 [gkpStore->gkStore_getNumReads() + 1];
+  uint16              scoreExact = 0;
+  uint16              scoreEstim = 0;
+
+  snprintf(logFileName,   FILENAME_MAX, "%s.log",   scoreFileName);
   snprintf(statsFileName, FILENAME_MAX, "%s.stats", scoreFileName);
 
-  errno = 0;
-  FILE     *scoreFile   = (scoreFileName == NULL) ? NULL : fopen(scoreFileName, "w");
-  if (errno)
-    fprintf(stderr, "ERROR: failed to open '%s' for writing: %s\n", scoreFileName, strerror(errno)), exit(1);
+  FILE               *scoreFile = openOutput(scoreFileName, true);
+  FILE               *logFile   = openOutput(logFileName,   (noLog == false));
 
+  globalScore         *gs       = new globalScore(minOvlLength, maxOvlLength, minErate, maxErate, logFile, (noStats == false));
 
-  errno = 0;
-  FILE     *logFile     = (noLog == true) ? NULL : fopen(logFileName, "w");
-  if (errno)
-    fprintf(stderr, "ERROR: failed to open '%s' for writing: %s\n", logFileName, strerror(errno)), exit(1);
+  uint64              readsNoOlaps = 0;
 
+  if (doCompare) {
+    fprintf(stdout, "  readID  exact  estim\n");
+    //fprintf(stdout, "-------- ------ ------\n");
+  }
 
-  uint32      ovlLen = 0;
-  uint32      ovlMax = 131072;
-  ovOverlap  *ovl    = ovOverlap::allocateOverlaps(gkpStore, ovlMax);
-  ovOverlap  swapped(gkpStore);
+  for (uint32 id=0; id <= gkpStore->gkStore_getNumReads(); id++) {
+    scores[id] = UINT16_MAX;
 
-  uint32      histLen = 0;
-  uint32      histMax = ovlMax;
-  uint64     *hist    = new uint64 [histMax];
-
-  uint64      totalOverlaps = 0;
-  uint64      lowErate     = 0;
-  uint64      highErate    = 0;
-  uint64      tooShort     = 0;
-  uint64      tooLong      = 0;
-  uint64      belowCutoff  = 0;
-  uint64      retained     = 0;
-
-  uint64      totalReads            = gkpStore->gkStore_getNumReads();
-  uint64      readsNoOlaps          = 0;
-  uint64      reads00OlapsFiltered  = 0;
-  uint64      reads50OlapsFiltered  = 0;
-  uint64      reads80OlapsFiltered  = 0;
-  uint64      reads95OlapsFiltered  = 0;
-  uint64      reads99OlapsFiltered  = 0;
-
-  for (uint32 id=1; id <= gkpStore->gkStore_getNumReads(); id++) {
-    scores[id] = UINT64_MAX;
-
-    inpStore->readOverlaps(id, ovl, ovlLen, ovlMax);
-
-    if (ovlLen == 0) {
+    if (numOlaps[id] == 0) {
       readsNoOlaps++;
       continue;
     }
 
-    if (ovl[0].a_iid != id) {
-      readsNoOlaps++;
-      continue;
+    if (doEstimate == true) {
+      scores[id] = scoreEstim = ovlHisto->overlapScoreEstimate(id, expectedCoverage);
+
+      gs->estimate(numOlaps[id], expectedCoverage);     //  Just for stats collection
     }
 
-    histLen = 0;
+    if (doExact == true) {
+      ovlStore->readOverlaps(id, ovl, ovlLen, ovlMax);
+      assert(ovlLen == numOlaps[id]);
+      assert(ovl[0].a_iid == id);
 
-    if (histMax < ovlMax) {
-      delete [] hist;
-
-      histMax = ovlMax;
-      hist    = new uint64 [ovlMax];
+      scores[id] = scoreExact = gs->compute(ovlLen, ovl, expectedCoverage, 0, NULL);
     }
 
-    //  Figure out which overlaps are good enough to consider and save their length.
-
-    for (uint32 oo=0; oo<ovlLen; oo++) {
-      uint64  ovlLength  = ovl[oo].a_end() - ovl[oo].a_bgn();
-      uint64  ovlScore   = 100 * ovlLength * (1 - ovl[oo].erate());
-      if (legacyScore) {
-         ovlScore  = ovlLength << AS_MAX_EVALUE_BITS;
-         ovlScore |= (AS_MAX_EVALUE - ovl[oo].evalue());
-      }
-
-      if ((ovl[oo].evalue() < minEvalue)        ||
-          (maxEvalue        < ovl[oo].evalue()) ||
-          (ovlLength        < minOvlLength)     ||
-          (maxOvlLength     < ovlLength))
-        continue;
-
-      hist[histLen++] = ovlScore;
-    }
-
-    //  Sort the lengths of overlaps we would save.
-
-    sort(hist, hist + histLen);
-
-    //  Figure out our threshold score.  Any overlap with score below this should be filtered.
-
-    if (expectedCoverage <= histLen)
-      scores[id] = hist[histLen - expectedCoverage];
-    else
-      scores[id] = 0;
-
-    //  One more pass, just to gather statistics
-
-    uint32 belowCutoffLocal = 0;
-
-    for (uint32 oo=0; oo<ovlLen; oo++) {
-      uint64  ovlLength  = ovl[oo].a_end() - ovl[oo].a_bgn();
-      uint64  ovlScore   = 100 * ovlLength * (1 - ovl[oo].erate());
-      if (legacyScore) {
-         ovlScore  = ovlLength << AS_MAX_EVALUE_BITS;
-         ovlScore |= (AS_MAX_EVALUE - ovl[oo].evalue());
-      }
-
-      bool    isC        = false;
-      bool    isD        = false;
-      bool    skipIt     = false;
-
-      totalOverlaps++;
-
-      //  First, count the filtering done above.
-
-      if (ovl[oo].evalue() < minEvalue) {
-        lowErate++;
-        skipIt = true;
-      }
-
-      if (maxEvalue < ovl[oo].evalue()) {
-        highErate++;
-        skipIt = true;
-      }
-
-      if (ovlLength < minOvlLength) {
-        tooShort++;
-        skipIt = true;
-      }
-
-      if (maxOvlLength < ovlLength) {
-        tooLong++;
-        skipIt = true;
-      }
-
-      //  Now, apply the global filter cutoff, only if the overlap wasn't already tossed out.
-
-      if ((skipIt == false) &&
-          (ovlScore < scores[id])) {
-        belowCutoff++;
-        belowCutoffLocal++;
-        skipIt = true;
-      }
-
-      if (skipIt)
-        continue;
-
-      retained++;
-    }  //  Over all overlaps
-
-    if (logFile) {
-      if (histLen <= expectedCoverage) {
-        fprintf(logFile, "%9u - %6u overlaps - %6u scored - %6u filtered - %4u saved (no filtering)\n",
-                id, ovlLen, histLen, 0, histLen);
-        reads00OlapsFiltered++;
-      }
-
-      else {
-        fprintf(logFile, "%9u - %6u overlaps - %6u scored - %6u filtered - %4u saved (length * erate cutoff %.2f)\n",
-                id, ovlLen, histLen, belowCutoffLocal, histLen - belowCutoffLocal, scores[id] / 100.0);
-
-        double  fractionFiltered = (double)belowCutoffLocal / histLen;
-
-        if (fractionFiltered < 0.50)   reads50OlapsFiltered++;
-        if (fractionFiltered < 0.80)   reads80OlapsFiltered++;
-        if (fractionFiltered < 0.95)   reads95OlapsFiltered++;
-        if (fractionFiltered < 1.00)   reads99OlapsFiltered++;
-      }
+    if (doCompare) {
+      fprintf(stdout, "%8u %6u %6u\n", id, scoreExact, scoreEstim);
     }
   }
 
-  if (scoreFile)
-    AS_UTL_safeWrite(scoreFile, scores, "scores", sizeof(uint64), gkpStore->gkStore_getNumReads() + 1);
-
-  if (scoreFile)
+  if (scoreFile) {
+    AS_UTL_safeWrite(scoreFile, scores, "scores", sizeof(uint16), gkpStore->gkStore_getNumReads() + 1);
     fclose(scoreFile);
+  }
 
   if (logFile)
     fclose(logFile);
 
   delete [] scores;
 
-  delete inpStore;
+  delete [] ovl;
+  delete [] numOlaps;
+  delete    ovlHisto;
+  delete    ovlStore;
 
   gkpStore->gkStore_close();
 
   if (noStats == true)
-     exit(0);
+    exit(0);
 
   errno = 0;
   FILE     *statsFile = fopen(statsFileName, "w");
@@ -370,34 +294,36 @@ main(int argc, char **argv) {
   fprintf(statsFile, "\n");
   fprintf(statsFile, "IGNORED:\n");
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "%12" F_U64P " (< %6.4f fraction error)\n", lowErate,  AS_OVS_decodeEvalue(minEvalue));
-  fprintf(statsFile, "%12" F_U64P " (> %6.4f fraction error)\n", highErate, AS_OVS_decodeEvalue(maxEvalue));
-  fprintf(statsFile, "%12" F_U64P " (< %u bases long)\n", tooShort,  minOvlLength);
-  fprintf(statsFile, "%12" F_U64P " (> %u bases long)\n", tooLong,   maxOvlLength);
+  fprintf(statsFile, "%12" F_U64P " (< %6.4f fraction error)\n", gs->lowErate(),  AS_OVS_decodeEvalue(minEvalue));
+  fprintf(statsFile, "%12" F_U64P " (> %6.4f fraction error)\n", gs->highErate(), AS_OVS_decodeEvalue(maxEvalue));
+  fprintf(statsFile, "%12" F_U64P " (< %u bases long)\n", gs->tooShort(),  minOvlLength);
+  fprintf(statsFile, "%12" F_U64P " (> %u bases long)\n", gs->tooLong(),   maxOvlLength);
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "FILTERED:\n");
+  fprintf(statsFile, "FILTERED:%s\n", (doEstimate == true) ? " (estimated)" : "");
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "%12" F_U64P " (too many overlaps, discard these shortest ones)\n", belowCutoff);
+  fprintf(statsFile, "%12" F_U64P " (too many overlaps, discard these shortest ones)\n", gs->belowCutoff());
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "EVIDENCE:\n");
+  fprintf(statsFile, "EVIDENCE:%s\n", (doEstimate == true) ? " (estimated)" : "");
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "%12" F_U64P " (longest overlaps)\n",  retained);
+  fprintf(statsFile, "%12" F_U64P " (longest overlaps)\n", gs->retained());
   fprintf(statsFile, "\n");
   fprintf(statsFile, "TOTAL:\n");
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "%12" F_U64P " (all overlaps)\n", totalOverlaps);
+  fprintf(statsFile, "%12" F_U64P " (all overlaps)\n", gs->totalOverlaps());
   fprintf(statsFile, "\n");
-  fprintf(statsFile, "READS:\n");
+  fprintf(statsFile, "READS:%s\n", (doEstimate == true) ? " (estimated)" : "");
   fprintf(statsFile, "-----\n");
   fprintf(statsFile, "\n");
   fprintf(statsFile, "%12" F_U64P " (no overlaps)\n", readsNoOlaps);
-  fprintf(statsFile, "%12" F_U64P " (no overlaps filtered)\n", reads00OlapsFiltered);
-  fprintf(statsFile, "%12" F_U64P " (<  50%% overlaps filtered)\n", reads50OlapsFiltered);
-  fprintf(statsFile, "%12" F_U64P " (<  80%% overlaps filtered)\n", reads80OlapsFiltered);
-  fprintf(statsFile, "%12" F_U64P " (<  95%% overlaps filtered)\n", reads95OlapsFiltered);
-  fprintf(statsFile, "%12" F_U64P " (< 100%% overlaps filtered)\n", reads99OlapsFiltered);
+  fprintf(statsFile, "%12" F_U64P " (no overlaps filtered)\n",      gs->reads00OlapsFiltered());
+  fprintf(statsFile, "%12" F_U64P " (<=  50%% overlaps filtered)\n", gs->reads50OlapsFiltered());
+  fprintf(statsFile, "%12" F_U64P " (<=  80%% overlaps filtered)\n", gs->reads80OlapsFiltered());
+  fprintf(statsFile, "%12" F_U64P " (<=  95%% overlaps filtered)\n", gs->reads95OlapsFiltered());
+  fprintf(statsFile, "%12" F_U64P " (<= 100%% overlaps filtered)\n", gs->reads99OlapsFiltered());
   fprintf(statsFile, "\n");
   fclose(statsFile);
+
+  delete gs;
 
   //  Histogram of overlaps per read
   //  Histogram of overlaps filtered per read

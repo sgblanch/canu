@@ -56,21 +56,128 @@ using namespace std;
 #undef DEBUG_LAYOUT
 
 
+
+class readStatus {
+public:
+  readStatus() {
+    numOlaps   = 0;
+
+    origLength = 0;
+    corrLength = 0;
+
+    message = NULL;
+
+    usedAsEvidence  = false;
+  };
+  ~readStatus() {
+    delete [] message;
+  };
+
+  uint32   numOlaps;
+
+  uint32   origLength;
+  uint32   corrLength;
+
+  char    *message;
+
+  bool     usedAsEvidence;
+};
+
+
+
+
+
+uint16 *
+loadThresholds(char *scoreName, uint32 numReads) {
+
+  if (scoreName == NULL)
+    return(NULL);
+
+  uint16  *olapThresh = new uint16 [numReads + 1];
+
+  errno = 0;
+  FILE *S = fopen(scoreName, "r");
+  if (errno)
+    fprintf(stderr, "failed to open '%s' for reading: %s\n", scoreName, strerror(errno)), exit(1);
+
+  AS_UTL_safeRead(S, olapThresh, "scores", sizeof(uint16), numReads + 1);
+
+  fclose(S);
+
+  return(olapThresh);
+}
+
+
+
+void
+loadReadList(char *readListName, uint32 iidMin, uint32 iidMax, set<uint32> &readList) {
+  char  L[1024];
+
+  if (readListName == NULL)
+    return;
+
+  errno = 0;
+  FILE *R = fopen(readListName, "r");
+  if (errno)
+    fprintf(stderr, "Failed to open '%s' for reading: %s\n", readListName, strerror(errno)), exit(1);
+
+  fgets(L, 1024, R);
+  while (!feof(R)) {
+    splitToWords W(L);
+    uint32       id = W(0);
+
+    if ((iidMin <= id) &&
+        (id     <= iidMax))
+      readList.insert(W(0));
+
+    fgets(L, 1024, R);
+  }
+
+  fclose(R);
+}
+
+
+
+FILE *
+openOutputFile(char *outputPrefix,
+               char *outputSuffix,
+               bool  doOpen = true) {
+  char   outputName[FILENAME_MAX];
+
+  if (outputPrefix == NULL)
+    return(NULL);
+
+  if (doOpen == false)
+    return(NULL);
+
+  snprintf(outputName, FILENAME_MAX, "%s.%s", outputPrefix, outputSuffix);
+
+  errno = 0;
+
+  FILE *F = fopen(outputName, "w");
+  if (errno)
+    fprintf(stderr, "Failed to open '%s' for writing: %s\n", outputName, strerror(errno)), exit(1);
+
+  return(F);
+}
+
+
+
 //  Generate a layout for the read in ovl[0].a_iid, using most or all of the overlaps
 //  in ovl.
 
 tgTig *
-generateLayout(gkStore    *gkpStore,
-               uint64     *readScores,
+generateLayout(readStatus *status,
+               uint16     *olapThresh,
                uint32      minEvidenceLength,
                double      maxEvidenceErate,
                double      maxEvidenceCoverage,
                ovOverlap *ovl,
                uint32      ovlLen,
                FILE       *flgFile) {
+  tgTig         *layout = new tgTig;
 
-  set<uint32_t> children;
-  tgTig  *layout = new tgTig;
+  set<uint32_t>  children;
 
   layout->_tigID           = ovl[0].a_iid;
   layout->_coverageStat    = 1.0;  //  Default to just barely unique
@@ -80,9 +187,7 @@ generateLayout(gkStore    *gkpStore,
   layout->_suggestRepeat   = false;
   layout->_suggestCircular = false;
 
-  gkRead  *read = gkpStore->gkStore_getRead(ovl[0].a_iid);
-
-  layout->_layoutLen       = read->gkRead_sequenceLength();
+  layout->_layoutLen       = status[layout->_tigID].origLength;
 
   resizeArray(layout->_children, layout->_childrenLen, layout->_childrenMax, ovlLen, resizeArray_doNothing);
 
@@ -91,16 +196,8 @@ generateLayout(gkStore    *gkpStore,
             layout->_tigID, layout->_layoutLen, ovlLen);
 
   for (uint32 oo=0; oo<ovlLen; oo++) {
-
-    //  ovlLength, in filterCorrectionOverlaps, is computed on the a read.  That is now the b read here.
-    //
-    //  Score '100 * ovlLength * (1 - ovl[oo].erate())' was tried early on, but it was worse than
-    //  the 'legacy' score.  This had been an option, always enabled, until August 2017.
-
-    uint64   ovlLength = ((ovl[oo].b_bgn() < ovl[oo].b_end()) ?
-                          ovl[oo].b_end() - ovl[oo].b_bgn() :
-                          ovl[oo].b_bgn() - ovl[oo].b_end());
-    uint64   ovlScore  = ovlLength << AS_MAX_EVALUE_BITS | (AS_MAX_EVALUE - ovl[oo].evalue());
+    uint64   ovlLength = ovl[oo].b_len();
+    uint16   ovlScore  = ovl[oo].overlapScore(true);
 
     if (ovlLength > AS_MAX_READLEN) {
       char ovlString[1024];
@@ -122,11 +219,11 @@ generateLayout(gkStore    *gkpStore,
       continue;
     }
 
-    if ((readScores != NULL) &&
-        (ovlScore < readScores[ovl[oo].b_iid])) {
+    if ((olapThresh != NULL) &&
+        (ovlScore < olapThresh[ovl[oo].b_iid])) {
       if (flgFile)
-        fprintf(flgFile, "  filter read %9u at position %6u,%6u length %5lu erate %.3f - filtered by global filter (threshold " F_U64 ")\n",
-                ovl[oo].b_iid, ovl[oo].a_bgn(), ovl[oo].a_end(), ovlLength, ovl[oo].erate(), readScores[ovl[oo].b_iid]);
+        fprintf(flgFile, "  filter read %9u at position %6u,%6u length %5lu erate %.3f - filtered by global filter (threshold " F_U16 ")\n",
+                ovl[oo].b_iid, ovl[oo].a_bgn(), ovl[oo].a_end(), ovlLength, ovl[oo].erate(), olapThresh[ovl[oo].b_iid]);
       continue;
     }
 
@@ -166,7 +263,8 @@ generateLayout(gkStore    *gkpStore,
     pos->_askip = ovl[oo].dat.ovl.bhg5;
     pos->_bskip = ovl[oo].dat.ovl.bhg3;
 
-    // record the ID
+    //  Remember we added this read - to filter read with both fwd/rev overlaps.
+
     children.insert(ovl[oo].b_iid);
   }
 
@@ -200,6 +298,78 @@ generateLayout(gkStore    *gkpStore,
 #endif
 
   return(layout);
+}
+
+
+
+bool
+analyzeExpectedConsensus(tgTig      *layout,
+                         uint32      minCorLength,
+                         uint32      minEvidenceCoverage,
+                         readStatus *status) {
+  bool    skipIt        = false;
+  char    skipMsg[1024] = {0};
+
+  //  Possibly filter by the length of the uncorrected read.
+
+  uint32  readID        = layout->tigID();
+
+  if (status[readID].origLength < minCorLength) {
+    strcat(skipMsg, "\tread_too_short");
+    skipIt = true;
+  }
+
+  //  Possibly filter by the length of the corrected read, taking into account depth of coverage.
+
+  intervalList<int32>   coverage;
+
+  for (uint32 ii=0; ii<layout->numberOfChildren(); ii++) {
+    tgPosition *pos = layout->getChild(ii);
+
+    coverage.add(pos->_min, pos->_max - pos->_min);
+  }
+
+  intervalList<int32>   depth(coverage);
+
+  int32    bgn       = INT32_MAX;
+  int32    corLen    = 0;
+
+  for (uint32 dd=0; dd<depth.numberOfIntervals(); dd++) {
+    if (depth.depth(dd) < minEvidenceCoverage) {
+      bgn = INT32_MAX;
+      continue;
+    }
+
+    if (bgn == INT32_MAX)
+      bgn = depth.lo(dd);
+
+    if (corLen < depth.hi(dd) - bgn)
+      corLen = depth.hi(dd) - bgn;
+  }
+
+  if (corLen < minCorLength) {
+    strcat(skipMsg, "\tcorrection_too_short");
+    skipIt = true;
+  }
+
+  //  Filter out empty tigs - these either have no overlaps, or failed the
+  //  length check in generateLayout.
+
+  if (layout->numberOfChildren() == 0) {
+    strcat(skipMsg, "\tno_children");
+    skipIt = true;
+  }
+
+  status[readID].numOlaps     = layout->numberOfChildren();
+  status[readID].corrLength   = corLen;
+
+  if (skipMsg[0] != 0)
+    status[readID].message = duplicateString(skipMsg);
+
+  for (uint32 ii=0; ii<layout->numberOfChildren(); ii++)
+    status[layout->getChild(ii)->ident()].usedAsEvidence = true;
+
+  return(skipIt == false);
 }
 
 
@@ -318,55 +488,56 @@ estimateMemoryUsage(gkStore       *gkpStore,
                     set<uint32>   &readList,
                     ovStore       *ovlStore) {
 
-    uint32   maxReadID  = 0;    //  Find the longest read and use that to estimate
-    uint32   maxReadLen = 0;    //  the maximum memory usage.
+  uint32   maxReadID  = 0;    //  Find the longest read and use that to estimate
+  uint32   maxReadLen = 0;    //  the maximum memory usage.
 
-    for (uint32 rr=iidMin; rr<iidMax; rr++) {
-      if ((readList.size() > 0) &&
-          (readList.count(rr) == 0))
-        continue;
+  for (uint32 rr=iidMin; rr<iidMax; rr++) {
+    if ((readList.size() > 0) &&
+        (readList.count(rr) == 0))
+      continue;
 
-      gkRead *read = gkpStore->gkStore_getRead(rr);
-      uint32  rLen = read->gkRead_sequenceLength();
+    gkRead *read = gkpStore->gkStore_getRead(rr);
+    uint32  rLen = read->gkRead_sequenceLength();
 
-      if (maxReadLen < rLen) {
-        maxReadID  = rr;
-        maxReadLen = rLen;
-      }
+    if (maxReadLen < rLen) {
+      maxReadID  = rr;
+      maxReadLen = rLen;
     }
+  }
 
-    //  Estimate the number of evidence reads it'll have.  Just assume all overlaps are used and
-    //  that every error is an indel.
+  //  Estimate the number of evidence reads it'll have.  Just assume all overlaps are used and
+  //  that every error is an indel.
 
-    ovlStore->setRange(maxReadID, maxReadID);
+  ovlStore->setRange(maxReadID, maxReadID);
 
-    ovOverlap   *overlaps    = NULL;
-    uint32       overlapsLen = 0;
-    uint32       overlapsMax = 0;
+  ovOverlap   *overlaps    = NULL;
+  uint32       overlapsLen = 0;
+  uint32       overlapsMax = 0;
 
-    uint64       nOvl       = ovlStore->numOverlapsInRange();
-    uint32       nOvlLoaded = ovlStore->readOverlaps(maxReadID, overlaps, overlapsLen, overlapsMax);
+  uint64       nOvl       = ovlStore->numOverlapsInRange();
+  uint32       nOvlLoaded = ovlStore->readOverlaps(maxReadID, overlaps, overlapsLen, overlapsMax);
 
-    assert(nOvl == nOvlLoaded);
+  assert(nOvl == nOvlLoaded);
 
-    uint64       nBasesInOlaps = 0;
+  uint64       nBasesInOlaps = 0;
 
-    for (uint32 oo=0; oo<nOvl; oo++) {
-      assert(overlaps[oo].a_bgn() < overlaps[oo].a_end());
+  for (uint32 oo=0; oo<nOvl; oo++) {
+    assert(overlaps[oo].a_bgn() < overlaps[oo].a_end());
 
-      nBasesInOlaps += (overlaps[oo].a_end() - overlaps[oo].a_bgn()) * (1 + overlaps[oo].erate());
-    }
+    nBasesInOlaps += (overlaps[oo].a_end() - overlaps[oo].a_bgn()) * (1 + overlaps[oo].erate());
+  }
 
-    //  Throw that at falconConsensus and let it decide memory usage.
+  //  Throw that at falconConsensus and let it decide memory usage.
 
-    falconConsensus *fc = new falconConsensus(0, 0.0, 0);
+  falconConsensus *fc = new falconConsensus(0, 0.0, 0);
 
-    uint64 mem = fc->estimateMemoryUsage(nOvl, nBasesInOlaps, maxReadLen);
+  uint64 mem = fc->estimateMemoryUsage(nOvl, nBasesInOlaps, maxReadLen);
 
-    fprintf(stdout, "Based on read %u of length %u with %lu overlaps covering %lu bases, expecting to use %lu bytes, %.3f GB memory usage\n",
-            maxReadID, maxReadLen, nOvl, nBasesInOlaps,
-            mem, mem / 1024.0 / 1024.0 / 1024.0);
+  fprintf(stdout, "Based on read %u of length %u with %lu overlaps covering %lu bases, expecting to use %lu bytes, %.3f GB memory usage\n",
+          maxReadID, maxReadLen, nOvl, nBasesInOlaps,
+          mem, mem / 1024.0 / 1024.0 / 1024.0);
 }
+
 
 
 int
@@ -502,7 +673,7 @@ main(int argc, char **argv) {
     fprintf(stderr, "INPUTS (all mandatory)\n");
     fprintf(stderr, "  -G gkpStore      mandatory path to gkpStore\n");
     fprintf(stderr, "  -O ovlStore      mandatory path to ovlStore\n");
-    fprintf(stderr, "  -S file          global scores (from filterCorrectionOverlaps)\n");
+    fprintf(stderr, "  -S file          overlap score thresholds (from filterCorrectionOverlaps)\n");
     fprintf(stderr, "  -p prefix        output prefix name, for logging and summary report\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "RESOURCE PARAMETERS\n");
@@ -551,91 +722,37 @@ main(int argc, char **argv) {
   ovStore  *ovlStore = new ovStore(ovlName, gkpStore);
   tgStore  *tigStore = (tigName != NULL) ? new tgStore(tigName) : NULL;
 
+  uint32    numReads = gkpStore->gkStore_getNumReads();
+
   //  Load read scores, if supplied.
 
-  uint64   *readScores = NULL;
-
-  if (scoreName) {
-    readScores = new uint64 [gkpStore->gkStore_getNumReads() + 1];
-
-    errno = 0;
-    FILE *scoreFile = fopen(scoreName, "r");
-    if (errno)
-      fprintf(stderr, "failed to open '%s' for reading: %s\n", scoreName, strerror(errno)), exit(1);
-
-    AS_UTL_safeRead(scoreFile, readScores, "scores", sizeof(uint64), gkpStore->gkStore_getNumReads() + 1);
-
-    fclose(scoreFile);
-  }
+  uint16   *olapThresh = loadThresholds(scoreName, numReads);
 
   //  Threshold the range of reads to operate on.
 
-  if (gkpStore->gkStore_getNumReads() < iidMin) {
+  if (numReads < iidMin) {
     fprintf(stderr, "ERROR: only " F_U32 " reads in the store (IDs 0-" F_U32 " inclusive); can't process requested range -b " F_U32 " -e " F_U32 "\n",
-            gkpStore->gkStore_getNumReads(),
-            gkpStore->gkStore_getNumReads()-1,
+            numReads,
+            numReads-1,
             iidMin, iidMax);
     exit(1);
   }
 
-  if (gkpStore->gkStore_getNumReads() < iidMax)
-    iidMax = gkpStore->gkStore_getNumReads();
+  if (numReads < iidMax)
+    iidMax = numReads;
 
   ovlStore->setRange(iidMin, iidMax);
 
   //  If a readList is supplied, load it, respecting the iidMin/iidMax (only to cut down on the
   //  size).
 
-  if (readListName != NULL) {
-    errno = 0;
-
-    char  L[1024];
-    FILE *R = fopen(readListName, "r");
-
-    if (errno)
-      fprintf(stderr, "Failed to open '%s' for reading: %s\n", readListName, strerror(errno)), exit(1);
-
-    fgets(L, 1024, R);
-    while (!feof(R)) {
-      splitToWords W(L);
-      uint32       id = W(0);
-
-      if ((iidMin <= id) &&
-          (id <= iidMax))
-        readList.insert(W(0));
-
-      fgets(L, 1024, R);
-    }
-
-    fclose(R);
-  }
+  loadReadList(readListName, iidMin, iidMax, readList);
 
   //  Open logging and summary files
 
-  if (outputPrefix) {
-    snprintf(logName, FILENAME_MAX, "%s.log",        outputPrefix);
-    snprintf(sumName, FILENAME_MAX, "%s.summary",    outputPrefix);
-    snprintf(flgName, FILENAME_MAX, "%s.filter.log", outputPrefix);
-
-    errno = 0;
-
-    logFile = fopen(logName, "w");
-    if (errno)
-      fprintf(stderr, "Failed to open '%s' for writing: %s\n", logName, strerror(errno)), exit(1);
-
-    sumFile = fopen(sumName, "w");
-    if (errno)
-      fprintf(stderr, "Failed to open '%s' for writing: %s\n", sumName, strerror(errno)), exit(1);
-
-#ifdef DEBUG_LAYOUT
-    flgFile = fopen(flgName, "w");
-    if (errno)
-      fprintf(stderr, "Failed to open '%s' for writing: %s\n", flgName, strerror(errno)), exit(1);
-#endif
-  }
-
-  if (logFile)
-    fprintf(logFile, "read\torigLen\tnumOlaps\tcorLen\n");
+  logFile = openOutputFile(outputPrefix, "log");
+  sumFile = openOutputFile(outputPrefix, "summary",    false);    //  Never used!
+  flgFile = openOutputFile(outputPrefix, "filter.log", false);    //  Too much crud!
 
   //  Estimate memory?
 
@@ -644,128 +761,82 @@ main(int argc, char **argv) {
     exit(0);  //  And exit rather ungracefully; just too many parameters to functionify the rest of main().
   }
 
-
   //  Initialize processing.
 
-  uint32       ovlMax = 1024 * 1024;
-  uint32       ovlLen = 0;
-  ovOverlap   *ovl    = ovOverlap::allocateOverlaps(gkpStore, ovlMax);
+  uint32             ovlMax = 1024 * 1024;
+  uint32             ovlLen = 0;
+  ovOverlap         *ovl    = ovOverlap::allocateOverlaps(gkpStore, ovlMax);
 
-  ovlLen = ovlStore->readOverlaps(ovl, ovlMax, true);
+  gkReadData        *readData = new gkReadData;
 
-  gkReadData   *readData = new gkReadData;
+  falconConsensus   *fc = (consensusOutput == false) ? NULL : new falconConsensus(minAllowedCoverage, minIdentity, minOutputLength);
 
-  falconConsensus  *fc = (consensusOutput == false) ? NULL : new falconConsensus(minAllowedCoverage, minIdentity, minOutputLength);
+  readStatus        *status = new readStatus [numReads + 1];
+
+  for (uint32 ii=1; ii<numReads; ii++)
+    status[ii].origLength = gkpStore->gkStore_getRead(ii)->gkRead_sequenceLength();
 
   //  And process.
 
-  while (ovlLen > 0) {
-    bool   skipIt        = false;
-    char   skipMsg[1024] = {0};
+  for (ovlLen = ovlStore->readOverlaps(ovl, ovlMax, true);
+       ovlLen > 0;
+       ovlLen = ovlStore->readOverlaps(ovl, ovlMax, true)) {
 
-    tgTig *layout = generateLayout(gkpStore,
-                                   readScores,
+    if ((readList.size() > 0) &&                     //  Skip reads not on the read list.  We need
+        (readList.count(ovl[0].a_iid) == 0))         //  to read the olaps, but don't need to make
+      continue;                                      //  or process the layout.
+
+    tgTig *layout = generateLayout(status,
+                                   olapThresh,
                                    minEvidenceLength, maxEvidenceErate, maxEvidenceCoverage,
                                    ovl, ovlLen,
                                    flgFile);
 
-    //  If there was a readList, skip anything not in it.
+    if (analyzeExpectedConsensus(layout,             //  If the analysis is good, write outputs.
+                                 minCorLength,       //  Otherwise, don't.
+                                 minEvidenceCoverage,
+                                 status) == true) {
+      if (tigStore != NULL)
+        tigStore->insertTig(layout, false);
 
-    if ((readList.size() > 0) &&
-        (readList.count(layout->tigID()) == 0)) {
-      strcat(skipMsg, "\tnot_in_readList");
-      skipIt = true;
+      if (falconOutput == true)
+        outputFalcon(gkpStore, layout, trimToAlign, stdout, readData);
+
+      if (consensusOutput == true)
+        generateFalconConsensus(fc, gkpStore, layout, trimToAlign, stdout, readData, minOutputLength);
     }
-
-    //  Possibly filter by the length of the uncorrected read.
-
-    gkRead *read = gkpStore->gkStore_getRead(layout->tigID());
-
-    if (read->gkRead_sequenceLength() < minCorLength) {
-      strcat(skipMsg, "\tread_too_short");
-      skipIt = true;
-    }
-
-    //  Possibly filter by the length of the corrected read, taking into account depth of coverage.
-
-    intervalList<int32>   coverage;
-
-    for (uint32 ii=0; ii<layout->numberOfChildren(); ii++) {
-      tgPosition *pos = layout->getChild(ii);
-
-      coverage.add(pos->_min, pos->_max - pos->_min);
-    }
-
-    intervalList<int32>   depth(coverage);
-
-    int32    bgn       = INT32_MAX;
-    int32    corLen    = 0;
-
-    for (uint32 dd=0; dd<depth.numberOfIntervals(); dd++) {
-      if (depth.depth(dd) < minEvidenceCoverage) {
-        bgn = INT32_MAX;
-        continue;
-      }
-
-      if (bgn == INT32_MAX)
-        bgn = depth.lo(dd);
-
-      if (corLen < depth.hi(dd) - bgn)
-        corLen = depth.hi(dd) - bgn;
-    }
-
-    if (corLen < minCorLength) {
-      strcat(skipMsg, "\tcorrection_too_short");
-      skipIt = true;
-    }
-
-    //  Filter out empty tigs - these either have no overlaps, or failed the
-    //  length check in generateLayout.
-
-    if (layout->numberOfChildren() <= 1) {
-      strcat(skipMsg, "\tno_children");
-      skipIt = true;
-    }
-
-    //  Output, if not skipped.
-
-    if (logFile)
-      fprintf(logFile, "%u\t%u\t%u\t%u%s\n",
-              layout->tigID(), read->gkRead_sequenceLength(), layout->numberOfChildren(), corLen, skipMsg);
-
-    if ((skipIt == false) && (tigStore != NULL))
-      tigStore->insertTig(layout, false);
-
-    if ((skipIt == false) && (falconOutput == true))
-      outputFalcon(gkpStore, layout, trimToAlign, stdout, readData);
-
-    if ((skipIt == false) && (consensusOutput == true))
-      generateFalconConsensus(fc, gkpStore, layout, trimToAlign, stdout, readData, minOutputLength);
 
     delete layout;
-
-    //  Load next batch of overlaps.
-
-    ovlLen = ovlStore->readOverlaps(ovl, ovlMax, true);
   }
 
-  if (falconOutput)
+  //  Terminate output files and write the logging.
+
+  if (falconOutput) {
     fprintf(stdout, "- -\n");
+  }
 
-  if (consensusOutput)
-    delete fc;
+  if (logFile) {
+    fprintf(logFile, "read\torigLen\tevidence\tcorrLen\tused\n");
 
+    for (uint32 ii=1; ii<numReads; ii++)
+      fprintf(logFile, "%u\t%u\t%u\t%u\t%u%s\n",
+              ii,
+              status[ii].origLength,
+              status[ii].numOlaps,
+              status[ii].corrLength,
+              status[ii].usedAsEvidence,
+              (status[ii].message) ? status[ii].message : "");
+  }
 
-  if (logFile != NULL)
-    fclose(logFile);
+  //  Close files and clean up.
 
-  if (sumFile != NULL)
-    fclose(sumFile);
+  if (logFile != NULL)   fclose(logFile);
+  if (sumFile != NULL)   fclose(sumFile);
+  if (flgFile != NULL)   fclose(flgFile);
 
-  if (flgFile != NULL)
-    fclose(flgFile);
-
-  delete [] readScores;
+  delete [] status;
+  delete    fc;
+  delete [] olapThresh;
   delete    readData;
   delete [] ovl;
   delete    tigStore;
@@ -775,4 +846,3 @@ main(int argc, char **argv) {
 
   return(0);
 }
-
